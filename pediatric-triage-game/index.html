@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<title>Pediatrik Triyaj — PDÜ Değerlendirmesi</title>
+<style>
+  :root {
+    --bg: #f3f5f8;
+    --surface: #ffffff;
+    --surface-alt: #f8fafc;
+    --text: #1e293b;
+    --muted: #5b6678;
+    --border: #d8dee7;
+    --control-border: #aeb8c6;
+    --primary: #1d4ed8;
+    --primary-hover: #1e40af;
+    --primary-ink: #ffffff;
+    --ok: #166534;
+    --ok-bg: #dcfce7;
+    --ok-border: #86efac;
+    --err: #b91c1c;
+    --err-bg: #fee2e2;
+    --err-border: #fca5a5;
+    --info: #1e3a8a;
+    --info-bg: #eff6ff;
+    --info-border: #bfdbfe;
+    --warn: #92400e;
+    --warn-bg: #fffbeb;
+    --warn-border: #fcd34d;
+    --focus: #2563eb;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 2px 6px rgba(15, 23, 42, .06);
+
+    /* Triyaj renkleri — Sağlık Bakanlığı renk kodlu sistem (3 grup) */
+    --tri-kirmizi: #dc2626;  --tri-kirmizi-ink: #ffffff;
+    --tri-sari: #f59e0b;     --tri-sari-ink: #1f1300;
+    --tri-yesil: #15803d;    --tri-yesil-ink: #ffffff;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  [hidden] { display: none !important; }
+  h1, h2, h3 { line-height: 1.25; }
+  h1 { font-size: 1.4rem; margin: 0 0 12px; }
+  h2 { font-size: 1.15rem; margin: 0 0 12px; }
+  h3 { font-size: 1rem; margin: 0; }
+  p { margin: 0 0 12px; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 16px;
+    padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  .brand { font-weight: 700; }
+  .header-meta { font-size: 14px; color: var(--muted); }
+  .container { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .app-footer { text-align: center; color: var(--muted); font-size: 12px; padding: 4px 16px 24px; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 20px; margin-bottom: 16px;
+  }
+  .card-hint { color: var(--muted); font-size: 14px; margin-top: -6px; }
+  .center { text-align: center; }
+
+  .notice { border: 1px solid var(--info-border); background: var(--info-bg); color: var(--info); border-radius: 8px; padding: 10px 12px; margin: 0 0 12px; }
+  .notice.warn { border-color: var(--warn-border); background: var(--warn-bg); color: var(--warn); }
+  .notice.danger { border-color: var(--err-border); background: var(--err-bg); color: var(--err); font-weight: 600; }
+  .small { font-size: 14px; }
+  .error-msg { border: 1px solid var(--err-border); background: var(--err-bg); color: var(--err); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px;
+    padding: 10px 20px; border: 1px solid transparent; border-radius: 8px;
+    font: inherit; font-weight: 600; text-decoration: none; cursor: pointer;
+  }
+  .btn.primary { background: var(--primary); color: var(--primary-ink); }
+  .btn.primary:hover:not(:disabled) { background: var(--primary-hover); }
+  .btn:disabled { background: #94a3b8; color: #ffffff; cursor: not-allowed; }
+  .btn.block { width: 100%; }
+  .btn:focus-visible, a:focus-visible, .text-input:focus-visible, .check input:focus-visible {
+    outline: 3px solid var(--focus); outline-offset: 2px;
+  }
+
+  /* Giriş */
+  .field-label { display: block; font-weight: 600; margin: 16px 0 6px; }
+  .text-input {
+    width: 100%; padding: 10px 12px; font: inherit; font-size: 17px; letter-spacing: .02em;
+    border: 1px solid var(--control-border); border-radius: 8px; background: var(--surface); color: var(--text);
+  }
+  .check {
+    display: flex; align-items: flex-start; gap: 10px; margin: 16px 0 4px; padding: 12px;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface-alt); cursor: pointer;
+  }
+  .check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; }
+  .actions { margin-top: 16px; }
+  .footnote { color: var(--muted); font-size: 13px; margin: 16px 0 0; }
+
+  /* İlerleme */
+  .progress { display: flex; align-items: center; gap: 6px; margin: 0 0 12px; font-size: 14px; color: var(--muted); }
+  .progress .dot {
+    width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+    border: 2px solid var(--border); background: var(--surface); font-weight: 700; font-size: 13px; color: var(--muted);
+  }
+  .progress .dot.done { background: var(--ok); border-color: var(--ok); color: #ffffff; }
+  .progress .dot.current { border-color: var(--primary); color: var(--primary); }
+  .progress .bar { width: 16px; height: 2px; background: var(--border); }
+  .progress .label { margin-left: 6px; font-weight: 600; color: var(--text); }
+
+  /* Hasta bilgileri */
+  .patient-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin: 0 0 12px; }
+  .patient-grid .wide { grid-column: 1 / -1; }
+  .kv-k { display: block; font-size: 13px; color: var(--muted); }
+  .kv-v { display: block; font-weight: 600; }
+  .history { border-top: 1px solid var(--border); padding-top: 12px; }
+  .history p { margin: 0; }
+
+  /* PDÜ */
+  .pat-item { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; background: var(--surface-alt); }
+  .pat-item:last-child { margin-bottom: 0; }
+  .item-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+  .obs { margin: 10px 0 0; }
+  .media-wrap { margin-top: 10px; }
+  .media-wrap img, .media-wrap video { display: block; max-width: 100%; max-height: 420px; border-radius: 8px; border: 1px solid var(--border); }
+  .media-wrap video { background: #000000; }
+  .video-frame { position: relative; width: 100%; padding-top: 56.25%; border-radius: 8px; overflow: hidden; background: #000000; }
+  .video-frame iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
+
+  /* Vital bulgular */
+  .vital-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .vital-row:first-child { padding-top: 0; }
+  .vital-row:last-child { border-bottom: 0; padding-bottom: 0; }
+  .vital-name { display: block; font-size: 14px; color: var(--muted); }
+  .vital-value { display: block; font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  /* Normal / Anormal segment kontrolü */
+  .seg { position: relative; display: inline-flex; border: 1px solid var(--control-border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .seg input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+  .seg label { min-width: 96px; padding: 9px 14px; text-align: center; font-weight: 600; color: var(--muted); cursor: pointer; user-select: none; }
+  .seg label + input + label { border-left: 1px solid var(--control-border); }
+  .seg input:checked + label { background: var(--primary); color: var(--primary-ink); }
+  .seg input:focus-visible + label { outline: 3px solid var(--focus); outline-offset: -3px; }
+  .seg input:disabled + label { cursor: default; }
+  .seg input:disabled:not(:checked) + label { opacity: .55; }
+
+  /* Triyaj seçici */
+  .lvl-kirmizi, .lvl-pill.kirmizi { --lvl: var(--tri-kirmizi); --lvl-ink: var(--tri-kirmizi-ink); }
+  .lvl-sari, .lvl-pill.sari       { --lvl: var(--tri-sari);    --lvl-ink: var(--tri-sari-ink); }
+  .lvl-yesil, .lvl-pill.yesil     { --lvl: var(--tri-yesil);   --lvl-ink: var(--tri-yesil-ink); }
+  .triage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .triage-opt { position: relative; }
+  .triage-opt input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+  .triage-opt label {
+    display: flex; flex-direction: column; gap: 6px; height: 100%; padding: 12px 14px 14px;
+    border: 1px solid var(--border); border-top: 8px solid var(--lvl); border-radius: var(--radius);
+    background: var(--surface); cursor: pointer;
+  }
+  .tri-name { font-weight: 700; font-size: 1.05rem; }
+  .tri-hint { font-size: 13px; line-height: 1.4; color: var(--muted); }
+  .triage-opt input:checked + label { background: var(--lvl); border-color: var(--lvl); color: var(--lvl-ink); box-shadow: 0 0 0 2px var(--lvl); }
+  .triage-opt input:checked + label .tri-hint { color: inherit; }
+  .triage-opt input:checked + label .tri-name::before { content: "✓ "; }
+  .triage-opt input:focus-visible + label { outline: 3px solid var(--focus); outline-offset: 3px; }
+  .triage-opt input:disabled + label { cursor: default; }
+  .triage-opt input:disabled:not(:checked) + label { opacity: .55; }
+
+  /* Gönderim */
+  .submit-hint { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
+  .submit-warning { font-size: 14px; font-weight: 600; color: var(--warn); margin: 8px 0 0; }
+  .saved { border-color: var(--ok-border); background: #f0fdf4; }
+  .saved-title { font-weight: 700; color: var(--ok); font-size: 1.05rem; }
+  .blocking { border-color: var(--err-border); }
+
+  /* Toplu geri bildirim */
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 12px 0; }
+  .summary-box { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--surface-alt); }
+  .summary-box .k { display: block; font-size: 13px; color: var(--muted); }
+  .summary-box .v { display: block; font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .sub { color: var(--muted); font-size: 14px; }
+  .section-title { margin: 18px 0 6px; }
+  .fb-table { width: 100%; border-collapse: collapse; margin: 0 0 8px; font-size: 15px; }
+  .fb-table th, .fb-table td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .fb-table th { font-size: 13px; font-weight: 600; color: var(--muted); background: var(--surface-alt); }
+  .fb-table td:first-child { overflow-wrap: anywhere; }
+  .fb-table th + th, .fb-table td + td { width: 1%; white-space: nowrap; }   /* sonuç sütunları içeriğe göre daralır, kırılmaz */
+  .fb-table tr.has-expl td { border-bottom: 0; padding-bottom: 2px; }
+  .fb-table .expl-row td { padding-top: 0; font-size: 13px; color: var(--muted); }
+  .fb-table .val-inline { display: none; }
+  .note, .expl-block { font-size: 14px; color: var(--muted); margin: 8px 0 0; }
+  .triage-result { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .lvl-pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 14px; font-weight: 700; white-space: nowrap; background: var(--lvl); color: var(--lvl-ink); }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 13px; font-weight: 700; white-space: nowrap; }
+  .tag.ok { background: var(--ok-bg); color: var(--ok); }
+  .tag.err { background: var(--err-bg); color: var(--err); }
+
+  /* Yükleniyor */
+  .loading { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(243, 245, 248, .78); }
+  .loading-box { display: flex; align-items: center; gap: 12px; padding: 14px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); font-weight: 600; }
+  .spinner { width: 22px; height: 22px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+  @media (max-width: 639.98px) {
+    .triage-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .triage-opt label { border-top: 1px solid var(--border); border-left: 6px solid var(--lvl); }
+  }
+  @media (max-width: 480px) {
+    .container { padding: 12px; }
+    .card { padding: 14px; }
+    .patient-grid { grid-template-columns: minmax(0, 1fr); }
+    .pat-item .item-head { flex-direction: column; align-items: flex-start; }
+    .seg label { min-width: 76px; padding: 8px 10px; }
+    .fb-table { font-size: 14px; }
+    .fb-table th, .fb-table td { padding: 6px 4px; }
+    .fb-table th + th { white-space: normal; }
+    .triage-result .sep { display: none; }
+    .fb-table .col-value { display: none; }
+    .fb-table .val-inline { display: block; font-size: 13px; font-weight: 400; color: var(--muted); }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Pediatrik Triyaj · PDÜ</div>
+  <div class="header-meta" id="headerMeta"></div>
+</header>
+
+<main class="container">
+  <noscript><div class="card error-msg">Bu uygulama JavaScript gerektirir.</div></noscript>
+
+  <!-- Giriş -->
+  <section id="screen-login" class="screen" hidden>
+    <div class="card">
+      <h1>Çalışma Girişi</h1>
+      <div class="notice" id="loginStrip"></div>
+      <p>Bu oturumda 3 pediatrik vaka değerlendireceksiniz. Her vaka için Pediatrik Değerlendirme Üçgeni'nin (PDÜ) üç bileşenini ve beş vital bulguyu Normal / Anormal olarak sınıflandırın, ardından Sağlık Bakanlığı renk kodlu triyaj sistemine göre bir triyaj kategorisi (Kırmızı / Sarı / Yeşil) seçin. Gönderilen yanıtlar değiştirilemez. Geri bildirim, üç vakanın tamamı gönderildikten sonra tek sayfada toplu olarak gösterilecektir.</p>
+      <form id="loginForm" novalidate>
+        <label class="field-label" for="uid">Katılımcı Kodu</label>
+        <input class="text-input" id="uid" name="uid" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="örn. P-014">
+        <label class="check" id="honorWrap" hidden>
+          <input type="checkbox" id="honor">
+          <span>Bu oturumdaki vakaları değerlendirirken herhangi bir kaynağa (kitap, internet, uygulama, meslektaş) başvurmayacağımı ve vakaları kimseyle paylaşmayacağımı beyan ederim.</span>
+        </label>
+        <div class="error-msg" id="loginError" role="alert" hidden></div>
+        <div class="actions"><button type="submit" class="btn primary" id="btnStart">Oturumu Başlat</button></div>
+      </form>
+      <p class="footnote">Bu sistem yalnızca eğitim ve araştırma amaçlıdır; gerçek hastalarda klinik karar vermek için kullanılamaz. Gerçek hasta verisi saklanmaz.</p>
+    </div>
+  </section>
+
+  <!-- Oturum kapalı -->
+  <section id="screen-closed" class="screen" hidden>
+    <div class="card center">
+      <h1>Aktif oturum yok</h1>
+      <p id="closedMsg"></p>
+    </div>
+  </section>
+
+  <!-- Yapılandırma hatası -->
+  <section id="screen-config-error" class="screen" hidden>
+    <div class="card center">
+      <h1>Uygulama şu anda kullanılamıyor</h1>
+      <p class="error-msg" id="configMsg"></p>
+      <p>Lütfen araştırmacıyla iletişime geçin.</p>
+    </div>
+  </section>
+
+  <!-- Vaka -->
+  <section id="screen-case" class="screen" hidden>
+    <div class="progress" id="caseProgress"></div>
+
+    <div class="card">
+      <h2>Hasta Bilgileri</h2>
+      <div class="patient-grid" id="patientGrid"></div>
+      <div class="history">
+        <span class="kv-k">Öykü</span>
+        <p id="caseDescription"></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>1 · Pediatrik Değerlendirme Üçgeni (PDÜ)</h2>
+      <p class="card-hint">Her bileşeni gözlem bulgusuna göre Normal veya Anormal olarak sınıflandırın.</p>
+      <div id="patList"></div>
+    </div>
+
+    <div class="card">
+      <h2>2 · Vital Bulgular</h2>
+      <p class="card-hint">Her vital bulguyu hastanın yaşına göre Normal veya Anormal olarak sınıflandırın.</p>
+      <div id="vitalList"></div>
+    </div>
+
+    <div class="card">
+      <h2>3 · Triyaj Kategorisi (Sağlık Bakanlığı)</h2>
+      <div id="triageSelector"></div>
+    </div>
+
+    <div class="card" id="submitCard">
+      <button type="button" class="btn primary block" id="btnSubmit" disabled>Yanıtı Gönder</button>
+      <p class="submit-hint" id="submitHint">Göndermek için 8 sınıflandırmanın tümünü tamamlayın ve bir triyaj kategorisi seçin. <span id="answerCount"></span></p>
+      <p class="submit-warning">Gönderilen yanıt değiştirilemez.</p>
+      <div class="error-msg" id="caseError" role="alert" hidden></div>
+    </div>
+
+    <div class="card saved" id="savedCard" role="status" hidden></div>
+    <div class="card blocking" id="blockingCard" role="alert" hidden></div>
+  </section>
+
+  <!-- Toplu geri bildirim -->
+  <section id="screen-summary" class="screen" hidden>
+    <div class="card" id="summaryError" hidden>
+      <div class="error-msg" id="summaryErrorMsg" role="alert"></div>
+      <button type="button" class="btn primary" id="btnRetrySummary">Geri bildirimi tekrar yükle</button>
+    </div>
+    <div id="summaryContent"></div>
+  </section>
+</main>
+
+<footer class="app-footer" id="appFooter"></footer>
+
+<div id="loading" class="loading" role="status" aria-live="polite" hidden>
+  <div class="loading-box"><span class="spinner" aria-hidden="true"></span><span id="loadingText">Yükleniyor…</span></div>
+</div>
+
+<script>
+  var BOOT = <?!= bootJson ?>;
+
+  /* ------------------------------------------------------------------ Sabitler */
+  var MSG = {
+    E_CONFIG: 'Yapılandırma hatası: CURRENT_SESSION 0 ile ' + BOOT.totalSessions + ' arasında bir tam sayı olmalıdır.',
+    E_CLOSED: 'Şu anda aktif bir oturum bulunmamaktadır. Oturum açıldığında araştırmacı tarafından bilgilendirileceksiniz.',
+    E_USER_ID_REQUIRED: 'Lütfen katılımcı kodunuzu girin.',
+    E_HONOR_REQUIRED: 'Başlamadan önce onur beyanını onaylamanız gerekmektedir.'
+  };
+
+  var PAT_LABELS = [
+    { field: 'user_pat_appearance', label: 'Genel Görünüm', text: 'pat_appearance_text', media: 'pat_appearance_media_url' },
+    { field: 'user_pat_work_of_breathing', label: 'Solunum İşi', text: 'pat_work_of_breathing_text', media: 'pat_work_of_breathing_media_url' },
+    { field: 'user_pat_circulation_to_skin', label: 'Cilt Dolaşımı', text: 'pat_circulation_to_skin_text', media: 'pat_circulation_to_skin_media_url' }
+  ];
+  var VITAL_LABELS = [
+    { field: 'user_temperature_classification', sign: 'temperature', label: 'Ateş' },
+    { field: 'user_heart_rate_classification', sign: 'heart_rate', label: 'Kalp hızı' },
+    { field: 'user_respiratory_rate_classification', sign: 'respiratory_rate', label: 'Solunum sayısı' },
+    { field: 'user_blood_pressure_classification', sign: 'blood_pressure', label: 'Kan basıncı' },
+    { field: 'user_spo2_classification', sign: 'spo2', label: 'SpO₂' }
+  ];
+  var ANSWER_FIELDS = PAT_LABELS.concat(VITAL_LABELS).map(function (x) { return x.field; });
+  var TRIAGE_FIELD = 'user_triage_level';
+
+  // Bu hatalarda vaka ekranında kalmanın anlamı yoktur: mesaj + "Sayfayı yenile".
+  var BLOCKING_CODES = { E_SESSION_CHANGED: true, E_OUT_OF_ORDER: true, E_CLOSED: true, E_CASE_NOT_IN_SESSION: true, E_CONFIG: true };
+
+  /* ------------------------------------------------------------------ Durum */
+  var state = {
+    session: null,        // startSession yanıtı
+    queue: [],            // tamamlanmamış vakalar (session_order sırasıyla)
+    idx: 0,
+    answers: {},
+    startTime: null,
+    submitting: false,
+    submitted: false
+  };
+  var currentScreen = '';
+
+  /* ------------------------------------------------------------------ Yardımcılar */
+  function $(id) { return document.getElementById(id); }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
+  }
+  function escAttr(s) { return esc(s).replace(/`/g, '&#96;'); }
+
+  function showScreen(id) {
+    Array.prototype.forEach.call(document.querySelectorAll('.screen'), function (el) { el.hidden = el.id !== id; });
+    currentScreen = id;
+    window.scrollTo(0, 0);
+  }
+  function setHeader(text) { $('headerMeta').textContent = text; }
+  function showLoading(text) { $('loadingText').textContent = text || 'Yükleniyor…'; $('loading').hidden = false; }
+  function hideLoading() { $('loading').hidden = true; }
+
+  /** Tüm sunucu çağrıları: başarı + hata işleyicisi, yükleniyor katmanı. */
+  function callServer(fn, args, loadingText, onSuccess, onFailure) {
+    showLoading(loadingText);
+    var runner = google.script.run
+      .withSuccessHandler(function (res) { hideLoading(); onSuccess(res); })
+      .withFailureHandler(function (err) { hideLoading(); onFailure(err); });
+    runner[fn].apply(runner, args);
+  }
+  function networkMessage(err) {
+    var m = err && err.message ? err.message : String(err || 'bilinmeyen hata');
+    return 'Bağlantı hatası: ' + m + ' — lütfen tekrar deneyin.';
+  }
+
+  function dec(v) { return String(v).replace('.', ','); }
+  function fmtVital(sign, c) {
+    switch (sign) {
+      case 'temperature': return dec(c.temperature_value) + (/^f/i.test(String(c.temperature_unit || '')) ? ' °F' : ' °C');
+      case 'heart_rate': return dec(c.heart_rate_value) + '/dk';
+      case 'respiratory_rate': return dec(c.respiratory_rate_value) + '/dk';
+      case 'blood_pressure': return dec(c.systolic_blood_pressure) + '/' + dec(c.diastolic_blood_pressure) + ' mmHg';
+      case 'spo2': return '%' + dec(c.spo2_value);
+      default: return '';
+    }
+  }
+  function fmtDuration(sec) {
+    if (sec === null || sec === undefined || sec === '' || !isFinite(Number(sec))) return '—';
+    var t = Math.round(Number(sec));
+    return Math.floor(t / 60) + ' dk ' + (t % 60) + ' sn';
+  }
+  function binText(v) { return Number(v) === 1 ? 'Anormal' : 'Normal'; }
+
+  function deviceType() {
+    var ua = navigator.userAgent || '';
+    if (/iPad|Tablet|PlayBook|Silk|Kindle/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua)) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'tablet';
+    if (/Mobi|Android|iPhone|iPod|IEMobile|Opera Mini/i.test(ua)) return 'mobile';
+    return 'desktop';
+  }
+
+  /* ------------------------------------------------------------------ Medya */
+  function youtubeId(url) {
+    var m = String(url).match(/(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:[^#]*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/i);
+    return m ? m[1] : '';
+  }
+  function driveId(url) {
+    var m = String(url).match(/drive\.google\.com\/(?:file\/d\/|open\?(?:[^#]*&)?id=|uc\?(?:[^#]*&)?id=)([A-Za-z0-9_-]{10,})/i);
+    return m ? m[1] : '';
+  }
+  function mediaHtml(url, label) {
+    if (!url) return '';
+    var yt = youtubeId(url);
+    if (yt) {
+      return '<div class="media-wrap"><div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/' + escAttr(yt) +
+        '?rel=0" title="' + escAttr(label) + ' videosu" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen ' +
+        'loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe></div></div>';
+    }
+    var dr = driveId(url);
+    if (dr) {
+      return '<div class="media-wrap"><div class="video-frame"><iframe src="https://drive.google.com/file/d/' + escAttr(dr) +
+        '/preview" title="' + escAttr(label) + ' medyası" allow="fullscreen" allowfullscreen loading="lazy"></iframe></div></div>';
+    }
+    if (/\.(mp4|webm|ogg)(?:[?#]|$)/i.test(url)) {
+      return '<div class="media-wrap"><video controls playsinline preload="metadata" src="' + escAttr(url) + '"></video></div>';
+    }
+    return '<div class="media-wrap"><img src="' + escAttr(url) + '" alt="' + escAttr(label) + ' görseli" loading="lazy" data-fallback="1">' +
+      '<a class="media-fallback" href="' + escAttr(url) + '" target="_blank" rel="noopener noreferrer" hidden>Görsel yüklenemedi — bağlantıyı yeni sekmede açın</a></div>';
+  }
+  function attachImageFallbacks(root) {
+    Array.prototype.forEach.call(root.querySelectorAll('img[data-fallback]'), function (img) {
+      img.addEventListener('error', function () {
+        img.hidden = true;
+        var link = img.nextElementSibling;
+        if (link) link.hidden = false;
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------------ Açılış */
+  function boot() {
+    $('appFooter').textContent = 'Pediatrik Triyaj Ciddi Oyunu · v' + BOOT.appVersion;
+    $('loginForm').addEventListener('submit', onLoginSubmit);
+    $('screen-case').addEventListener('change', onCaseChange);
+    $('btnSubmit').addEventListener('click', submitCurrent);
+    $('savedCard').addEventListener('click', function (e) { if (e.target && e.target.id === 'btnNext') nextCase(); });
+    $('btnRetrySummary').addEventListener('click', loadSummary);
+    document.addEventListener('click', function (e) {
+      if (e.target && e.target.getAttribute && e.target.getAttribute('data-action') === 'reload') window.location.reload();
+    });
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    if (BOOT.activeSession === -1) return showConfigError(MSG.E_CONFIG);
+    if (BOOT.activeSession === 0) return showClosed(MSG.E_CLOSED);
+    renderLogin();
+  }
+
+  function showConfigError(message) {
+    $('configMsg').textContent = message || MSG.E_CONFIG;
+    setHeader('Aktif oturum yok');
+    showScreen('screen-config-error');
+  }
+  function showClosed(message) {
+    $('closedMsg').textContent = message || MSG.E_CLOSED;
+    setHeader('Aktif oturum yok');
+    showScreen('screen-closed');
+  }
+
+  /* ------------------------------------------------------------------ Giriş */
+  function renderLogin() {
+    $('loginStrip').innerHTML = 'Aktif oturum: <b>' + esc(BOOT.activeSession) + ' / ' + esc(BOOT.totalSessions) + '</b>';
+    $('honorWrap').hidden = !BOOT.requireHonor;
+    setHeader('Aktif oturum: ' + BOOT.activeSession + ' / ' + BOOT.totalSessions);
+    showScreen('screen-login');
+  }
+  function loginError(message) {
+    var box = $('loginError');
+    box.textContent = message;
+    box.hidden = !message;
+  }
+
+  function onLoginSubmit(e) {
+    e.preventDefault();
+    loginError('');
+    var raw = $('uid').value;
+    if (!raw.replace(/\s+/g, '')) { loginError(MSG.E_USER_ID_REQUIRED); $('uid').focus(); return; }
+    var honor = BOOT.requireHonor ? $('honor').checked : false;
+    if (BOOT.requireHonor && !honor) { loginError(MSG.E_HONOR_REQUIRED); $('honor').focus(); return; }
+
+    $('btnStart').disabled = true;
+    callServer('startSession', [raw, honor], 'Oturum hazırlanıyor…', function (res) {
+      $('btnStart').disabled = false;
+      if (!res) return loginError(networkMessage('boş yanıt'));
+      if (res.error) {
+        if (res.code === 'E_CONFIG') return showConfigError(res.error);
+        if (res.code === 'E_CLOSED') return showClosed(res.error);
+        return loginError(res.error);
+      }
+      if (res.status === 'closed') return showClosed(res.message);
+      state.session = res;
+      if (res.status === 'completed') return loadSummary();
+
+      var done = {};
+      res.completedCaseIds.forEach(function (id) { done[id] = true; });
+      state.queue = res.cases
+        .filter(function (c) { return !done[c.case_id]; })
+        .sort(function (a, b) { return a.session_order - b.session_order; });
+      state.idx = 0;
+      if (!state.queue.length) return loadSummary();
+      renderCase();
+    }, function (err) {
+      $('btnStart').disabled = false;
+      loginError(networkMessage(err));
+    });
+  }
+
+  /* ------------------------------------------------------------------ Vaka ekranı */
+  function currentCase() { return state.queue[state.idx]; }
+
+  function segControl(name, label) {
+    var id0 = 'f_' + name + '_0';
+    var id1 = 'f_' + name + '_1';
+    return '<div class="seg" role="radiogroup" aria-label="' + escAttr(label) + '">' +
+      '<input type="radio" id="' + id0 + '" name="' + name + '" value="0"><label for="' + id0 + '">Normal</label>' +
+      '<input type="radio" id="' + id1 + '" name="' + name + '" value="1"><label for="' + id1 + '">Anormal</label>' +
+      '</div>';
+  }
+
+  function triageSelectorHtml(levels) {
+    return '<div class="triage-grid" role="radiogroup" aria-label="Triyaj kategorisi">' + levels.map(function (t) {
+      var id = 'tri_' + t.code;
+      return '<div class="triage-opt lvl-' + escAttr(String(t.code).toLowerCase()) + '">' +
+        '<input type="radio" id="' + escAttr(id) + '" name="' + TRIAGE_FIELD + '" value="' + escAttr(t.code) + '">' +
+        '<label for="' + escAttr(id) + '"><span class="tri-name">' + esc(t.label) + '</span>' +
+        (t.hint ? '<span class="tri-hint">' + esc(t.hint) + '</span>' : '') + '</label></div>';
+    }).join('') + '</div>';
+  }
+
+  function progressHtml(c) {
+    var k = state.session.casesPerSession;
+    var parts = [];
+    for (var i = 1; i <= k; i++) {
+      var cls = i < c.session_order ? 'dot done' : (i === c.session_order ? 'dot current' : 'dot');
+      if (i > 1) parts.push('<span class="bar" aria-hidden="true"></span>');
+      parts.push('<span class="' + cls + '" aria-hidden="true">' + (i < c.session_order ? '✓' : i) + '</span>');
+    }
+    parts.push('<span class="label">Vaka ' + esc(c.session_order) + ' / ' + esc(k) + '</span>');
+    return parts.join('');
+  }
+
+  function renderCase() {
+    var c = currentCase();
+    var s = state.session;
+    state.answers = {};
+    state.submitting = false;
+    state.submitted = false;
+
+    setHeader('Katılımcı ' + s.userId + ' · Oturum ' + s.sessionNumber + '/' + s.totalSessions +
+      ' · Vaka ' + c.session_order + '/' + s.casesPerSession);
+    $('caseProgress').innerHTML = progressHtml(c);
+
+    $('patientGrid').innerHTML =
+      '<div><span class="kv-k">Yaş</span><span class="kv-v">' + esc(c.age + ' ' + c.age_unit) + '</span></div>' +
+      '<div><span class="kv-k">Cinsiyet</span><span class="kv-v">' + esc(c.gender) + '</span></div>' +
+      '<div class="wide"><span class="kv-k">Başvuru yakınması</span><span class="kv-v">' + esc(c.chief_complaint) + '</span></div>';
+    $('caseDescription').textContent = c.case_description;
+
+    $('patList').innerHTML = PAT_LABELS.map(function (p) {
+      var text = c[p.text];
+      return '<div class="pat-item"><div class="item-head"><h3>' + esc(p.label) + '</h3>' + segControl(p.field, p.label) + '</div>' +
+        (text ? '<p class="obs">' + esc(text) + '</p>' : '') + mediaHtml(c[p.media], p.label) + '</div>';
+    }).join('');
+    attachImageFallbacks($('patList'));
+
+    $('vitalList').innerHTML = VITAL_LABELS.map(function (v) {
+      return '<div class="vital-row"><div><span class="vital-name">' + esc(v.label) + '</span>' +
+        '<span class="vital-value">' + esc(fmtVital(v.sign, c)) + '</span></div>' + segControl(v.field, v.label) + '</div>';
+    }).join('');
+
+    $('triageSelector').innerHTML = triageSelectorHtml(s.triageLevels);
+
+    $('submitCard').hidden = false;
+    $('savedCard').hidden = true;
+    $('savedCard').innerHTML = '';
+    $('blockingCard').hidden = true;
+    $('blockingCard').innerHTML = '';
+    caseError('');
+    $('btnSubmit').textContent = 'Yanıtı Gönder';
+    lockInputs(false);
+    updateSubmitState();
+
+    showScreen('screen-case');
+    state.startTime = new Date();
+  }
+
+  function onCaseChange(e) {
+    var t = e.target;
+    if (!t || t.type !== 'radio' || state.submitting || state.submitted) return;
+    if (ANSWER_FIELDS.indexOf(t.name) === -1 && t.name !== TRIAGE_FIELD) return;
+    state.answers[t.name] = t.value;
+    updateSubmitState();
+  }
+
+  function answeredCount() {
+    var n = ANSWER_FIELDS.filter(function (f) { return state.answers[f] === '0' || state.answers[f] === '1'; }).length;
+    return n + (state.answers[TRIAGE_FIELD] ? 1 : 0);
+  }
+  function isComplete() { return answeredCount() === ANSWER_FIELDS.length + 1; }
+
+  function updateSubmitState() {
+    var complete = isComplete();
+    $('btnSubmit').disabled = !complete || state.submitting || state.submitted;
+    $('submitHint').hidden = complete;
+    $('answerCount').textContent = '(' + answeredCount() + ' / ' + (ANSWER_FIELDS.length + 1) + ')';
+  }
+
+  function lockInputs(locked) {
+    Array.prototype.forEach.call(document.querySelectorAll('#screen-case input'), function (el) { el.disabled = locked; });
+  }
+  function caseError(message) {
+    var box = $('caseError');
+    box.textContent = message;
+    box.hidden = !message;
+  }
+
+  function submitCurrent() {
+    if (state.submitting || state.submitted || !isComplete()) return;
+    var c = currentCase();
+    var s = state.session;
+    var payload = {
+      userId: s.userId,
+      loginId: s.loginId,
+      sessionNumber: s.sessionNumber,
+      caseId: c.case_id,
+      caseStartTime: state.startTime.toISOString(),
+      responseTimeSeconds: Math.round((Date.now() - state.startTime.getTime()) / 100) / 10,
+      deviceType: deviceType(),
+      honorAccepted: s.honorAccepted === true
+    };
+    ANSWER_FIELDS.forEach(function (f) { payload[f] = Number(state.answers[f]); });
+    payload[TRIAGE_FIELD] = state.answers[TRIAGE_FIELD];
+
+    state.submitting = true;
+    lockInputs(true);
+    caseError('');
+    $('btnSubmit').disabled = true;
+    $('btnSubmit').textContent = 'Gönderiliyor…';
+
+    callServer('submitCase', [payload], 'Yanıtınız kaydediliyor…', function (res) {
+      state.submitting = false;
+      if (res && res.ok) return onSaved(res.sessionOrder, res.sessionComplete);
+      // Ağ hatası sonrası yeniden denemede ilk gönderim sunucuya ulaşmış demektir → başarı yolu.
+      if (res && res.code === 'E_DUPLICATE') return onSaved(c.session_order, c.session_order >= s.casesPerSession);
+      if (res && BLOCKING_CODES[res.code]) return showBlocking(res.error);
+      restoreSubmit();
+      caseError(res && res.error ? res.error : networkMessage('beklenmeyen yanıt'));
+    }, function (err) {
+      state.submitting = false;
+      restoreSubmit();
+      caseError(networkMessage(err));
+    });
+  }
+
+  function restoreSubmit() {
+    lockInputs(false);
+    $('btnSubmit').textContent = 'Yanıtı Gönder';
+    updateSubmitState();
+  }
+
+  function onSaved(order, sessionComplete) {
+    state.submitted = true;
+    lockInputs(true);
+    $('submitCard').hidden = true;
+    var box = $('savedCard');
+    box.hidden = false;
+    if (sessionComplete) {
+      box.innerHTML = '<p class="saved-title">✓ Son vaka kaydedildi. Geri bildirim hazırlanıyor…</p>';
+      loadSummary();
+      return;
+    }
+    box.innerHTML =
+      '<p class="saved-title">✓ Vaka ' + esc(order) + ' / ' + esc(state.session.casesPerSession) + ' kaydedildi.</p>' +
+      '<p>Doğru yanıtlar ve gerekçeler, oturumun tüm vakaları tamamlandığında gösterilecektir.</p>' +
+      '<button type="button" class="btn primary" id="btnNext">Sonraki Vaka →</button>';
+    $('btnNext').focus();
+  }
+
+  function nextCase() {
+    state.idx++;
+    if (state.idx >= state.queue.length) return loadSummary();
+    renderCase();
+  }
+
+  function reloadControlHtml() {
+    if (BOOT.appUrl) return '<a class="btn primary" href="' + escAttr(BOOT.appUrl) + '" target="_top">Sayfayı yenile</a>';
+    return '<button type="button" class="btn primary" data-action="reload">Sayfayı yenile</button>';
+  }
+
+  function showBlocking(message) {
+    state.submitting = false;
+    state.submitted = true;   // çıkış uyarısı gösterilmesin; bu vaka artık gönderilemez
+    lockInputs(true);
+    $('submitCard').hidden = true;
+    var box = $('blockingCard');
+    box.innerHTML = '<div class="error-msg">' + esc(message) + '</div>' + reloadControlHtml();
+    box.hidden = false;
+    box.scrollIntoView({ block: 'center' });
+  }
+
+  function onBeforeUnload(e) {
+    if (currentScreen === 'screen-case' && !state.submitted && Object.keys(state.answers).length > 0) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  }
+
+  /* ------------------------------------------------------------------ Toplu geri bildirim */
+  function loadSummary() {
+    callServer('getSessionSummary', [state.session.userId], 'Geri bildirim hazırlanıyor…', function (res) {
+      if (!res) return showSummaryError(networkMessage('boş yanıt'));
+      if (res.error) return showSummaryError(res.error);
+      renderSummary(res);
+    }, function (err) {
+      showSummaryError(networkMessage(err));
+    });
+  }
+
+  function showSummaryError(message) {
+    state.submitted = true;
+    $('summaryContent').innerHTML = '';
+    $('summaryErrorMsg').textContent = message;
+    $('summaryError').hidden = false;
+    showScreen('screen-summary');
+  }
+
+  function summaryBox(label, value) {
+    return '<div class="summary-box"><span class="k">' + esc(label) + '</span><span class="v">' + esc(value) + '</span></div>';
+  }
+  function resultTag(ok) { return ok ? '<span class="tag ok">Doğru</span>' : '<span class="tag err">Yanlış</span>'; }
+  function levelPill(code, label) {
+    return '<span class="lvl-pill ' + escAttr(String(code).toLowerCase()) + '">' + esc(label) + '</span>';
+  }
+
+  function caseFeedbackHtml(c) {
+    var tri = c.triage;
+    var patRows = c.pat.map(function (p) {
+      return '<tr' + (p.explanation ? ' class="has-expl"' : '') + '><td><b>' + esc(p.component) + '</b></td>' +
+        '<td>' + binText(p.user) + '</td><td>' + binText(p.correct) + '</td><td>' + resultTag(p.isCorrect) + '</td></tr>' +
+        (p.explanation ? '<tr class="expl-row"><td colspan="4">' + esc(p.explanation) + '</td></tr>' : '');
+    }).join('');
+    var vitalRows = c.vitals.map(function (v) {
+      return '<tr><td><b>' + esc(v.sign) + '</b><span class="val-inline">' + esc(v.value) + '</span></td>' +
+        '<td class="col-value">' + esc(v.value) + '</td><td>' + binText(v.user) + '</td><td>' + binText(v.correct) + '</td>' +
+        '<td>' + resultTag(v.isCorrect) + '</td></tr>';
+    }).join('');
+    var triTags = tri.exactMatch ? '<span class="tag ok">Tam uyum</span>' : '<span class="tag err">' + esc(tri.directionText) + '</span>';
+    if (tri.dangerousUnderTriage) triTags += '<span class="tag err">Tehlikeli düşük triyaj</span>';
+
+    return '<article class="card case-fb">' +
+      '<h2>Vaka ' + esc(c.sessionOrder) + ' · ' + esc(c.caseTitle) + '</h2>' +
+      '<p class="sub">' + esc(c.age + ' ' + c.ageUnit) + ' · ' + esc(c.gender) + ' · ' + esc(c.chiefComplaint) +
+        ' · Yanıt süresi: ' + esc(fmtDuration(c.responseTimeSeconds)) + '</p>' +
+      '<h3 class="section-title">Pediatrik Değerlendirme Üçgeni (PDÜ)</h3>' +
+      '<table class="fb-table"><thead><tr><th>Bileşen</th><th>Yanıtınız</th><th>Doğru yanıt</th><th>Sonuç</th></tr></thead>' +
+        '<tbody>' + patRows + '</tbody></table>' +
+      '<h3 class="section-title">Vital Bulgular</h3>' +
+      '<table class="fb-table"><thead><tr><th>Vital bulgu</th><th class="col-value">Değer</th><th>Yanıtınız</th><th>Doğru yanıt</th><th>Sonuç</th></tr></thead>' +
+        '<tbody>' + vitalRows + '</tbody></table>' +
+      (c.vitalSignsNote ? '<p class="note">' + esc(c.vitalSignsNote) + '</p>' : '') +
+      '<h3 class="section-title">Triyaj Kategorisi</h3>' +
+      '<div class="triage-result"><span>Sizin kararınız: ' + levelPill(tri.user, tri.userLabel) + '</span>' +
+        '<span class="sep" aria-hidden="true">·</span><span>Referans: ' + levelPill(tri.reference, tri.referenceLabel) + '</span>' +
+        '<span class="sep" aria-hidden="true">·</span>' + triTags + '</div>' +
+      (tri.explanation ? '<p class="expl-block">' + esc(tri.explanation) + '</p>' : '') +
+      '</article>';
+  }
+
+  function renderSummary(s) {
+    var t = s.totals;
+    var last = s.sessionNumber >= s.totalSessions;
+    var html =
+      '<div class="card"><h1>Oturum ' + esc(s.sessionNumber) + ' · Toplu Geri Bildirim</h1>' +
+        '<div class="summary-grid">' +
+          summaryBox('Triyaj kategorisi', t.triageExact + ' / ' + t.triageMax) +
+          summaryBox('PDÜ', t.pat + ' / ' + t.patMax) +
+          summaryBox('Vital bulgular', t.vital + ' / ' + t.vitalMax) +
+          summaryBox('Toplam süre', fmtDuration(t.totalTimeSeconds)) +
+        '</div>' +
+        (t.dangerousUnderTriage > 0
+          ? '<p class="notice danger">Bu oturumda ' + esc(t.dangerousUnderTriage) +
+            ' Kırmızı alan vakası Sarı/Yeşil alana atandı (tehlikeli düşük triyaj).</p>'
+          : '') +
+      '</div>';
+    s.cases.forEach(function (c) { html += caseFeedbackHtml(c); });
+    html += '<div class="card"><p>Oturum ' + esc(s.sessionNumber) + ' tamamlandı. Yanıtlarınız kaydedildi. ' +
+      (last ? 'Bu, çalışmanın son oturumuydu; katılımınız için teşekkür ederiz. '
+            : 'Bir sonraki oturum araştırmacı tarafından duyurulacaktır. ') +
+      'Lütfen vakaları ve geri bildirimleri kimseyle paylaşmayınız.</p></div>';
+
+    state.submitted = true;
+    $('summaryError').hidden = true;
+    $('summaryContent').innerHTML = html;
+    setHeader('Katılımcı ' + s.userId + ' · Oturum ' + s.sessionNumber + '/' + s.totalSessions + ' · Tamamlandı');
+    showScreen('screen-summary');
+  }
+
+  boot();
+</script>
+</body>
+</html>

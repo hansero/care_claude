@@ -184,9 +184,10 @@ function loadCode(o = {}) {
     if (src === before && String(o.session) !== '1') throw new Error('CURRENT_SESSION satırı bulunamadı');
   }
   Object.entries(o.config || {}).forEach(([k, v]) => {
-    const re = new RegExp('(\\n  ' + k + ':\\s*)[^,\\n]+');
+    // Değer; virgül, satır sonu veya satır sonu yorumu (//) ile biter.
+    const re = new RegExp('(\\n  ' + k + ':\\s*)[^,\\n]*?(\\s*(?:,|//|\\n))');
     if (!re.test(src)) throw new Error('CONFIG anahtarı bulunamadı: ' + k);
-    src = src.replace(re, '$1' + JSON.stringify(v));
+    src = src.replace(re, '$1' + JSON.stringify(v) + '$2');
   });
 
   const sandbox = {

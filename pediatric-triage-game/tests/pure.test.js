@@ -102,7 +102,7 @@ test('puanlama: tek PDÜ ve tek vital hatası', () => {
 
 test('T27 — buildRecord_: case_global_order ve sütun kümesi', () => {
   const c = byId['CASE-008'];
-  const answers = correctAnswers(c);
+  const answers = Object.assign(correctAnswers(c), { user_triage_confidence: 2 });
   const rec = j(C.buildRecord_({
     n: 3, uid: 'P-014', loginId: 'L-12345678', caseStartTime: '2026-12-03T09:14:05.120Z',
     payload: { responseTimeSeconds: 131.46, deviceType: 'mobile', honorAccepted: true },
@@ -118,6 +118,27 @@ test('T27 — buildRecord_: case_global_order ve sütun kümesi', () => {
   assert.equal(rec.honor_statement_accepted, 1);
   assert.equal(rec.device_type, 'mobile');
   assert.equal(rec.case_submission_time, '2026-12-03T09:16:16.000Z');
+  assert.equal(rec.user_triage_confidence, 2);
+});
+
+test('güven düzeyi puanlamaya girmez: 1 ile 3 arasında yalnızca güven sütunu değişir', () => {
+  const c = byId['CASE-003'];
+  const rec = (conf) => {
+    const answers = Object.assign(correctAnswers(c, 'YESIL'), { user_triage_confidence: conf });
+    return j(C.buildRecord_({
+      n: 1, uid: 'P-1', loginId: 'L-12345678', caseStartTime: '2026-12-03T09:14:05.120Z',
+      payload: { responseTimeSeconds: 50, deviceType: 'desktop', honorAccepted: true },
+      answers, theCase: c, score: C.scoreResponse_(c, answers),
+      now: new Date('2026-12-03T09:16:16.000Z'), responseId: 'R-x'
+    }));
+  };
+  const a = rec(1);
+  const b = rec(3);
+  assert.equal(a.user_triage_confidence, 1);
+  assert.equal(b.user_triage_confidence, 3);
+  delete a.user_triage_confidence;
+  delete b.user_triage_confidence;
+  assert.deepEqual(a, b);
 });
 
 test('yanıt süresi ve cihaz normalleştirme', () => {
@@ -130,9 +151,11 @@ test('yanıt süresi ve cihaz normalleştirme', () => {
 });
 
 test('sütun yapıları', () => {
-  assert.equal(RESPONSE_HEADERS.length, 45);
+  assert.equal(RESPONSE_HEADERS.length, 46);
   assert.equal(new Set(RESPONSE_HEADERS).size, RESPONSE_HEADERS.length);
   assert.ok(!RESPONSE_HEADERS.some((h) => /area/.test(h)), 'renk alanı sütunu kalmamalı');
+  assert.equal(RESPONSE_HEADERS.indexOf('user_triage_confidence'), RESPONSE_HEADERS.indexOf('dangerous_under_triage') + 1);
+  assert.equal(RESPONSE_HEADERS.indexOf('honor_statement_accepted'), RESPONSE_HEADERS.indexOf('user_triage_confidence') + 1);
   assert.equal(CASE_HEADERS.length, 40);
   assert.equal(new Set(CASE_HEADERS).size, CASE_HEADERS.length);
   j(g.get('TEXT_FORMAT_COLUMNS')).forEach((h) => assert.ok(RESPONSE_HEADERS.includes(h), h));
@@ -264,14 +287,62 @@ test('err_ — mesaj yer tutucuları', () => {
   assert.equal(C.err_('NOPE').code, 'E_INTERNAL');
 });
 
-test('summaryTotals_', () => {
-  const t = j(C.summaryTotals_([
-    { triage_exact_match: 1, pat_total_score: 3, vital_sign_total_score: 5, dangerous_under_triage: 0, response_time_seconds: 60.2 },
-    { triage_exact_match: 0, pat_total_score: 2, vital_sign_total_score: 4, dangerous_under_triage: 1, response_time_seconds: '' },
-    { triage_exact_match: 1, pat_total_score: 1, vital_sign_total_score: 3, dangerous_under_triage: 0, response_time_seconds: 30.1 }
+test('summarizeRows_ — ortak oturum özetleyici (§18.2.1)', () => {
+  const row = (ref, user, extra) => Object.assign({
+    reference_triage_level: ref, user_triage_level: user,
+    triage_exact_match: ref === user ? 1 : 0, pat_total_score: 3, vital_sign_total_score: 5,
+    dangerous_under_triage: ref === 'KIRMIZI' && user !== 'KIRMIZI' ? 1 : 0
+  }, extra);
+  const t = j(C.summarizeRows_([
+    row('YESIL', 'YESIL', { pat_total_score: 3, vital_sign_total_score: 5, response_time_seconds: 60.2, user_triage_confidence: 3 }),
+    row('KIRMIZI', 'SARI', { pat_total_score: 2, vital_sign_total_score: 4, response_time_seconds: '', user_triage_confidence: 1 }),
+    row('SARI', 'SARI', { pat_total_score: 1, vital_sign_total_score: 3, response_time_seconds: 30.1, user_triage_confidence: '3' })
   ]));
   assert.deepEqual(t, {
-    triageExact: 2, triageMax: 3, pat: 6, patMax: 9, vital: 12, vitalMax: 15,
-    dangerousUnderTriage: 1, totalTimeSeconds: 90.3
+    casesDone: 3, triageExact: 2, pat: 6, vital: 12, dangerousUnderTriage: 1, totalTimeSeconds: 90.3,
+    confidenceCounts: { 1: 1, 2: 0, 3: 2 }, confidenceMean: 2.3,
+    redAreaCorrect: false, greenAreaCorrect: true
+  });
+  // Kırmızı/Yeşil vaka yoksa null; güven yoksa ortalama null
+  const none = j(C.summarizeRows_([row('SARI', 'SARI', { user_triage_confidence: '' })]));
+  assert.equal(none.redAreaCorrect, null);
+  assert.equal(none.greenAreaCorrect, null);
+  assert.equal(none.confidenceMean, null);
+  assert.deepEqual(none.confidenceCounts, { 1: 0, 2: 0, 3: 0 });
+  // Her vakaya KIRMIZI: kırmızı doğru, yeşil yanlış
+  const allRed = j(C.summarizeRows_([row('KIRMIZI', 'KIRMIZI'), row('YESIL', 'KIRMIZI'), row('SARI', 'KIRMIZI')]));
+  assert.equal(allRed.redAreaCorrect, true);
+  assert.equal(allRed.greenAreaCorrect, false);
+});
+
+test('parseConfidence_ — yalnızca 1/2/3', () => {
+  [1, 2, 3].forEach((v) => assert.equal(C.parseConfidence_(v), v));
+  ['1', '2', '3'].forEach((v) => assert.equal(C.parseConfidence_(v), Number(v)));
+  [0, 4, '4', '', null, undefined, true, 2.5, ' 2', '02'].forEach((v) => assert.equal(C.parseConfidence_(v), null, String(v)));
+});
+
+test('isSummaryWindowOpen_ — tamamlama kilidi penceresi (§19.2)', () => {
+  const now = new Date('2026-12-03T10:00:00.000Z');
+  const ago = (min) => new Date(now.getTime() - min * 60000).toISOString();
+  assert.equal(C.isSummaryWindowOpen_([{ feedback_viewed_time: '' }, {}], now), true, 'hiç görülmedi');
+  assert.equal(C.isSummaryWindowOpen_([{ feedback_viewed_time: ago(10) }], now), true);
+  assert.equal(C.isSummaryWindowOpen_([{ feedback_viewed_time: ago(30) }], now), true, 'sınır dahil');
+  assert.equal(C.isSummaryWindowOpen_([{ feedback_viewed_time: ago(31) }], now), false);
+  // En erken görüntüleme esas alınır
+  assert.equal(C.isSummaryWindowOpen_([{ feedback_viewed_time: ago(5) }, { feedback_viewed_time: ago(45) }], now), false);
+  // Date nesnesi de okunur; bozuk değer yok sayılır
+  assert.equal(C.isSummaryWindowOpen_([{ feedback_viewed_time: new Date(ago(10)) }, { feedback_viewed_time: 'bozuk' }], now), true);
+  const zero = loadCode({ config: { SUMMARY_REVIEW_WINDOW_MINUTES: 0 } }).ctx;
+  assert.equal(zero.isSummaryWindowOpen_([{ feedback_viewed_time: '' }], now), true, 'pencere 0: ilk görüntüleme serbest');
+  assert.equal(zero.isSummaryWindowOpen_([{ feedback_viewed_time: ago(1) }], now), false);
+});
+
+test('T40 — kodda güvene dayalı puan/çarpan tanımlayıcısı yok', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const { ROOT } = require('./harness');
+  ['Code.gs', 'index.html'].forEach((f) => {
+    const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    assert.doesNotMatch(src, /wager|game_?points|calibration|kalibrasyon/i, f);
   });
 });

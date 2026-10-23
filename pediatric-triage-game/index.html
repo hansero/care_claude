@@ -29,6 +29,7 @@
     --warn-bg: #fffbeb;
     --warn-border: #fcd34d;
     --focus: #2563eb;
+    --accent: #16577d;
     --radius: 10px;
     --shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 2px 6px rgba(15, 23, 42, .06);
 
@@ -45,6 +46,7 @@
     font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   }
   [hidden] { display: none !important; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   h1, h2, h3 { line-height: 1.25; }
   h1 { font-size: 1.4rem; margin: 0 0 12px; }
   h2 { font-size: 1.15rem; margin: 0 0 12px; }
@@ -169,6 +171,12 @@
   .triage-opt input:disabled + label { cursor: default; }
   .triage-opt input:disabled:not(:checked) + label { opacity: .55; }
 
+  /* Güven düzeyi (puanlanmaz) */
+  .confidence-block { margin: 0 0 16px; }
+  .confidence-q { font-weight: 600; margin: 0 0 8px; }
+  .seg.seg-conf { display: flex; width: 100%; }
+  .seg.seg-conf label { flex: 1 1 0; min-width: 0; }
+
   /* Gönderim */
   .submit-hint { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
   .submit-warning { font-size: 14px; font-weight: 600; color: var(--warn); margin: 8px 0 0; }
@@ -197,6 +205,42 @@
   .tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 13px; font-weight: 700; white-space: nowrap; }
   .tag.ok { background: var(--ok-bg); color: var(--ok); }
   .tag.err { background: var(--err-bg); color: var(--err); }
+  .summary-box .v.v-small { font-size: 1rem; line-height: 1.6; }
+  .confidence-line { font-size: 14px; color: var(--muted); margin: 8px 0 0; }
+
+  /* Gelişimim */
+  .curve-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 4px 0 6px; font-size: 14px; }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .curve-svg { display: block; width: 100%; max-width: 640px; height: auto; margin: 0 auto; overflow: visible; }
+  .curve-svg .curve-grid { stroke: #e2e8f0; stroke-width: 1; }
+  .curve-svg .curve-current { fill: #eef2f7; }
+  .curve-svg .curve-tick, .curve-svg .curve-axis { fill: var(--muted); font-size: 13px; }
+  .curve-svg .curve-tick.is-current { fill: var(--text); font-weight: 700; }
+  .curve-svg .curve-value { font-size: 14px; font-weight: 700; }
+  .curve-svg.compact { max-width: none; }
+  .curve-svg.compact .curve-tick, .curve-svg.compact .curve-axis { font-size: 12px; }
+  .curve-svg.compact .curve-value { font-size: 13px; }
+  .table-scroll { overflow-x: auto; margin-top: 12px; }
+  .curve-table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .curve-table th, .curve-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); text-align: center; white-space: nowrap; }
+  .curve-table thead th { font-size: 13px; color: var(--muted); font-weight: 600; background: var(--surface-alt); }
+  .curve-table tbody th { text-align: left; font-weight: 600; }
+  .curve-table .is-current { background: #eef2f7; font-weight: 700; }
+
+  /* Başarımlar */
+  .badge-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 4px; }
+  .badge { text-align: center; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 10px; background: var(--surface); }
+  .badge .medal {
+    width: 56px; height: 56px; margin: 0 auto 8px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px; letter-spacing: .02em;
+  }
+  .badge.earned { border-color: var(--accent); }
+  .badge.earned .medal { background: var(--accent); color: #ffffff; box-shadow: inset 0 0 0 3px rgba(255, 255, 255, .35); }
+  .badge.not-earned { opacity: .55; }
+  .badge.not-earned .medal { border: 2px solid #94a3b8; color: #64748b; background: var(--surface-alt); }
+  .badge-name { font-weight: 700; }
+  .badge-crit { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .badge-status { margin-top: 6px; font-size: 13px; font-weight: 700; color: var(--accent); }
 
   /* Yükleniyor */
   .loading { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(243, 245, 248, .78); }
@@ -208,6 +252,7 @@
   @media (max-width: 639.98px) {
     .triage-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
     .triage-opt label { border-top: 1px solid var(--border); border-left: 6px solid var(--lvl); }
+    .badge-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (max-width: 480px) {
     .container { padding: 12px; }
@@ -221,6 +266,9 @@
     .triage-result .sep { display: none; }
     .fb-table .col-value { display: none; }
     .fb-table .val-inline { display: block; font-size: 13px; font-weight: 400; color: var(--muted); }
+    .seg.seg-conf { flex-direction: column; }
+    .seg.seg-conf label + input + label { border-left: 0; border-top: 1px solid var(--control-border); }
+    .curve-table th, .curve-table td { padding: 6px 6px; font-size: 13px; }
   }
 </style>
 </head>
@@ -258,6 +306,15 @@
     <div class="card center">
       <h1>Aktif oturum yok</h1>
       <p id="closedMsg"></p>
+    </div>
+  </section>
+
+  <!-- Tamamlama kilidi (§19) -->
+  <section id="screen-locked" class="screen" hidden>
+    <div class="card center">
+      <h1 id="lockedTitle">Oturum tamamlandı</h1>
+      <p id="lockedMsg"></p>
+      <p class="footnote">Bu pencereyi kapatabilirsiniz.</p>
     </div>
   </section>
 
@@ -300,9 +357,10 @@
       <div id="triageSelector"></div>
     </div>
 
-    <div class="card" id="submitCard">
+    <div class="card" id="actionCard">
+      <div class="confidence-block" id="confidenceBlock" hidden></div>
       <button type="button" class="btn primary block" id="btnSubmit" disabled>Yanıtı Gönder</button>
-      <p class="submit-hint" id="submitHint">Göndermek için 8 sınıflandırmanın tümünü tamamlayın ve bir triyaj kategorisi seçin. <span id="answerCount"></span></p>
+      <p class="submit-hint" id="submitHint"><span id="submitHintText"></span> <span id="answerCount"></span></p>
       <p class="submit-warning">Gönderilen yanıt değiştirilemez.</p>
       <div class="error-msg" id="caseError" role="alert" hidden></div>
     </div>
@@ -352,6 +410,15 @@
   ];
   var ANSWER_FIELDS = PAT_LABELS.concat(VITAL_LABELS).map(function (x) { return x.field; });
   var TRIAGE_FIELD = 'user_triage_level';
+  var CONF_FIELD = 'user_triage_confidence';
+  var BINARY_OPTIONS = [{ value: '0', text: 'Normal' }, { value: '1', text: 'Anormal' }];
+  var CONF_OPTIONS = [
+    { value: '1', text: '★ Emin değilim' },
+    { value: '2', text: '★★ Orta' },
+    { value: '3', text: '★★★ Kesinlikle eminim' }
+  ];
+  var HINT_BASE = 'Göndermek için 8 sınıflandırmanın tümünü tamamlayın ve bir triyaj kategorisi seçin.';
+  var HINT_WITH_CONF = 'Göndermek için 8 sınıflandırmanın tümünü tamamlayın, bir triyaj kategorisi ve güven düzeyinizi seçin.';
 
   // Bu hatalarda vaka ekranında kalmanın anlamı yoktur: mesaj + "Sayfayı yenile".
   var BLOCKING_CODES = { E_SESSION_CHANGED: true, E_OUT_OF_ORDER: true, E_CLOSED: true, E_CASE_NOT_IN_SESSION: true, E_CONFIG: true };
@@ -359,6 +426,7 @@
   /* ------------------------------------------------------------------ Durum */
   var state = {
     session: null,        // startSession yanıtı
+    summary: null,        // getSessionSummary yanıtı (grafiğin yeniden çizimi için)
     queue: [],            // tamamlanmamış vakalar (session_order sırasıyla)
     idx: 0,
     answers: {},
@@ -367,6 +435,77 @@
     submitted: false
   };
   var currentScreen = '';
+
+  /* @pure-begin ------------------------------------------------------ Saf yardımcılar
+   * DOM'a dokunmaz; tests/client-pure.test.js bu bölümü Node.js'te çalıştırır. */
+  function dec(v) { return String(v).replace('.', ','); }
+  function fmtDuration(sec) {
+    if (sec === null || sec === undefined || sec === '' || !isFinite(Number(sec))) return '—';
+    var t = Math.round(Number(sec));
+    return Math.floor(t / 60) + ' dk ' + (t % 60) + ' sn';
+  }
+  function fmtMean(v) {
+    return (v === null || v === undefined || v === '' || !isFinite(Number(v))) ? '—' : dec(Number(v).toFixed(1));
+  }
+
+  /** Rozetler: yalnızca MEVCUT oturumun toplamlarından (3 grupta "Renk Gözü" = "Tam İsabet" olduğundan yoktur). */
+  var BADGE_DEFS = [
+    { id: 'RED_GUARD', name: 'Kırmızı Nöbetçi', monogram: 'KN',
+      criterion: function () { return 'Kırmızı vakayı Kırmızı alana ve Yeşil vakayı Yeşil alana atamak'; },
+      earned: function (t) { return t.redAreaCorrect === true && t.greenAreaCorrect === true; } },
+    { id: 'FULL_TRIANGLE', name: 'Tam Üçgen', monogram: 'TÜ',
+      criterion: function (k) { return 'PDÜ\'nün tüm bileşenlerini doğru sınıflandırmak (' + 3 * k + '/' + 3 * k + ')'; },
+      earned: function (t, k) { return t.pat === 3 * k; } },
+    { id: 'VITAL_MASTER', name: 'Vital Ustası', monogram: 'VU',
+      criterion: function (k) { return 'Tüm vital bulguları doğru sınıflandırmak (' + 5 * k + '/' + 5 * k + ')'; },
+      earned: function (t, k) { return t.vital === 5 * k; } },
+    { id: 'BULLSEYE', name: 'Tam İsabet', monogram: 'Tİ',
+      criterion: function (k) { return 'Tüm triyaj kategorilerini doğru seçmek (' + k + '/' + k + ')'; },
+      earned: function (t, k) { return t.triageExact === k; } }
+  ];
+
+  /** Yalnızca mevcut oturumun toplamlarını alır; geçmiş parametresi YOKTUR. */
+  function computeBadges(totals, casesPerSession) {
+    var t = totals || {};
+    var k = Number(casesPerSession);
+    return BADGE_DEFS.map(function (b) {
+      return { id: b.id, name: b.name, monogram: b.monogram, criterion: b.criterion(k), earned: b.earned(t, k) === true };
+    });
+  }
+
+  /** Gelişimim serileri: renk VE çizgi deseniyle ayırt edilir; dx = üst üste binmeyi azaltan küçük yatay kayma. */
+  var CURVE_SERIES = [
+    { key: 'triage', label: 'Triyaj kategorisi', color: '#16577d', width: 3, dash: '', dx: 0,
+      value: function (h, k) { return h.triageExact / k; } },
+    { key: 'pat', label: 'PDÜ', color: '#1e7b4f', width: 2, dash: '6 4', dx: -5,
+      value: function (h, k) { return h.pat / (3 * k); } },
+    { key: 'vital', label: 'Vital bulgular', color: '#8a5a00', width: 2, dash: '2 4', dx: 5,
+      value: function (h, k) { return h.vital / (5 * k); } }
+  ];
+
+  /** Yalnızca tamamlanmış oturumlar çizilir; çizgi yalnızca ardışık tamamlanmış oturumları birleştirir. */
+  function learningCurveModel(history, casesPerSession) {
+    var k = Number(casesPerSession);
+    var done = {};
+    (history || []).forEach(function (h) { if (h && h.status === 'completed') done[h.sessionNumber] = h; });
+    var sessions = Object.keys(done).map(Number).sort(function (a, b) { return a - b; });
+    return {
+      completedSessions: sessions,
+      showSinglePointNote: sessions.length === 1,
+      series: CURVE_SERIES.map(function (s) {
+        var points = sessions.map(function (n) {
+          return { session: n, value: Math.max(0, Math.min(1, s.value(done[n], k))) };
+        });
+        var segments = [];
+        for (var i = 1; i < points.length; i++) {
+          if (points[i].session === points[i - 1].session + 1) segments.push([points[i - 1], points[i]]);
+        }
+        return { key: s.key, label: s.label, color: s.color, width: s.width, dash: s.dash, dx: s.dx,
+                 points: points, segments: segments };
+      })
+    };
+  }
+  /* @pure-end */
 
   /* ------------------------------------------------------------------ Yardımcılar */
   function $(id) { return document.getElementById(id); }
@@ -400,7 +539,6 @@
     return 'Bağlantı hatası: ' + m + ' — lütfen tekrar deneyin.';
   }
 
-  function dec(v) { return String(v).replace('.', ','); }
   function fmtVital(sign, c) {
     switch (sign) {
       case 'temperature': return dec(c.temperature_value) + (/^f/i.test(String(c.temperature_unit || '')) ? ' °F' : ' °C');
@@ -411,12 +549,12 @@
       default: return '';
     }
   }
-  function fmtDuration(sec) {
-    if (sec === null || sec === undefined || sec === '' || !isFinite(Number(sec))) return '—';
-    var t = Math.round(Number(sec));
-    return Math.floor(t / 60) + ' dk ' + (t % 60) + ' sn';
-  }
   function binText(v) { return Number(v) === 1 ? 'Anormal' : 'Normal'; }
+  function confidenceText(v) {
+    var opt = CONF_OPTIONS.filter(function (o) { return o.value === String(v); })[0];
+    return opt ? opt.text : '—';
+  }
+  function confidenceOn() { return !!(state.session && state.session.confidenceEnabled === true); }
 
   function deviceType() {
     var ua = navigator.userAgent || '';
@@ -476,6 +614,7 @@
       if (e.target && e.target.getAttribute && e.target.getAttribute('data-action') === 'reload') window.location.reload();
     });
     window.addEventListener('beforeunload', onBeforeUnload);
+    window.addEventListener('resize', onResize);
 
     if (BOOT.activeSession === -1) return showConfigError(MSG.E_CONFIG);
     if (BOOT.activeSession === 0) return showClosed(MSG.E_CLOSED);
@@ -491,6 +630,14 @@
     $('closedMsg').textContent = message || MSG.E_CLOSED;
     setHeader('Aktif oturum yok');
     showScreen('screen-closed');
+  }
+  /** Tamamlama kilidi (§19): yalnızca mesaj; vaka veya özet gösterilmez. */
+  function showLocked(info) {
+    state.submitted = true;
+    $('lockedTitle').textContent = 'Oturum ' + info.sessionNumber + ' tamamlandı';
+    $('lockedMsg').textContent = info.message;
+    setHeader('Katılımcı ' + info.userId + ' · Oturum ' + info.sessionNumber + '/' + info.totalSessions + ' · Tamamlandı');
+    showScreen('screen-locked');
   }
 
   /* ------------------------------------------------------------------ Giriş */
@@ -524,8 +671,9 @@
         return loginError(res.error);
       }
       if (res.status === 'closed') return showClosed(res.message);
+      if (res.status === 'locked') return showLocked(res);
       state.session = res;
-      if (res.status === 'completed') return loadSummary();
+      if (res.status === 'summary') return loadSummary();
 
       var done = {};
       res.completedCaseIds.forEach(function (id) { done[id] = true; });
@@ -544,12 +692,13 @@
   /* ------------------------------------------------------------------ Vaka ekranı */
   function currentCase() { return state.queue[state.idx]; }
 
-  function segControl(name, label) {
-    var id0 = 'f_' + name + '_0';
-    var id1 = 'f_' + name + '_1';
-    return '<div class="seg" role="radiogroup" aria-label="' + escAttr(label) + '">' +
-      '<input type="radio" id="' + id0 + '" name="' + name + '" value="0"><label for="' + id0 + '">Normal</label>' +
-      '<input type="radio" id="' + id1 + '" name="' + name + '" value="1"><label for="' + id1 + '">Anormal</label>' +
+  function segControl(name, label, options, extraClass) {
+    return '<div class="seg' + (extraClass ? ' ' + extraClass : '') + '" role="radiogroup" aria-label="' + escAttr(label) + '">' +
+      (options || BINARY_OPTIONS).map(function (o) {
+        var id = 'f_' + name + '_' + o.value;
+        return '<input type="radio" id="' + id + '" name="' + name + '" value="' + escAttr(o.value) + '">' +
+          '<label for="' + id + '">' + esc(o.text) + '</label>';
+      }).join('') +
       '</div>';
   }
 
@@ -606,7 +755,16 @@
 
     $('triageSelector').innerHTML = triageSelectorHtml(s.triageLevels);
 
-    $('submitCard').hidden = false;
+    // Güven düzeyi: vaka başına bir kez, gönder düğmesinin hemen üstünde; varsayılan seçim YOK.
+    var confOn = confidenceOn();
+    $('confidenceBlock').hidden = !confOn;
+    $('confidenceBlock').innerHTML = confOn
+      ? '<p class="confidence-q">Bu vakadaki triyaj kararınızdan ne kadar eminsiniz?</p>' +
+        segControl(CONF_FIELD, 'Triyaj kararına güven düzeyi', CONF_OPTIONS, 'seg-conf')
+      : '';
+    $('submitHintText').textContent = confOn ? HINT_WITH_CONF : HINT_BASE;
+
+    $('actionCard').hidden = false;
     $('savedCard').hidden = true;
     $('savedCard').innerHTML = '';
     $('blockingCard').hidden = true;
@@ -623,22 +781,26 @@
   function onCaseChange(e) {
     var t = e.target;
     if (!t || t.type !== 'radio' || state.submitting || state.submitted) return;
-    if (ANSWER_FIELDS.indexOf(t.name) === -1 && t.name !== TRIAGE_FIELD) return;
+    if (ANSWER_FIELDS.indexOf(t.name) === -1 && t.name !== TRIAGE_FIELD && t.name !== CONF_FIELD) return;
     state.answers[t.name] = t.value;
     updateSubmitState();
   }
 
   function answeredCount() {
     var n = ANSWER_FIELDS.filter(function (f) { return state.answers[f] === '0' || state.answers[f] === '1'; }).length;
-    return n + (state.answers[TRIAGE_FIELD] ? 1 : 0);
+    n += state.answers[TRIAGE_FIELD] ? 1 : 0;
+    if (confidenceOn() && /^[123]$/.test(state.answers[CONF_FIELD] || '')) n += 1;
+    return n;
   }
-  function isComplete() { return answeredCount() === ANSWER_FIELDS.length + 1; }
+  /** 8 sınıflandırma + triyaj (+ güven düzeyi, açıksa). */
+  function requiredCount() { return ANSWER_FIELDS.length + 1 + (confidenceOn() ? 1 : 0); }
+  function isComplete() { return answeredCount() === requiredCount(); }
 
   function updateSubmitState() {
     var complete = isComplete();
     $('btnSubmit').disabled = !complete || state.submitting || state.submitted;
     $('submitHint').hidden = complete;
-    $('answerCount').textContent = '(' + answeredCount() + ' / ' + (ANSWER_FIELDS.length + 1) + ')';
+    $('answerCount').textContent = '(' + answeredCount() + ' / ' + requiredCount() + ')';
   }
 
   function lockInputs(locked) {
@@ -666,6 +828,7 @@
     };
     ANSWER_FIELDS.forEach(function (f) { payload[f] = Number(state.answers[f]); });
     payload[TRIAGE_FIELD] = state.answers[TRIAGE_FIELD];
+    if (confidenceOn()) payload[CONF_FIELD] = Number(state.answers[CONF_FIELD]);
 
     state.submitting = true;
     lockInputs(true);
@@ -697,7 +860,7 @@
   function onSaved(order, sessionComplete) {
     state.submitted = true;
     lockInputs(true);
-    $('submitCard').hidden = true;
+    $('actionCard').hidden = true;
     var box = $('savedCard');
     box.hidden = false;
     if (sessionComplete) {
@@ -727,7 +890,7 @@
     state.submitting = false;
     state.submitted = true;   // çıkış uyarısı gösterilmesin; bu vaka artık gönderilemez
     lockInputs(true);
-    $('submitCard').hidden = true;
+    $('actionCard').hidden = true;
     var box = $('blockingCard');
     box.innerHTML = '<div class="error-msg">' + esc(message) + '</div>' + reloadControlHtml();
     box.hidden = false;
@@ -745,6 +908,10 @@
   function loadSummary() {
     callServer('getSessionSummary', [state.session.userId], 'Geri bildirim hazırlanıyor…', function (res) {
       if (!res) return showSummaryError(networkMessage('boş yanıt'));
+      if (res.code === 'E_SESSION_LOCKED') {
+        return showLocked({ sessionNumber: state.session.sessionNumber, totalSessions: state.session.totalSessions,
+                            userId: state.session.userId, message: res.error });
+      }
       if (res.error) return showSummaryError(res.error);
       renderSummary(res);
     }, function (err) {
@@ -760,15 +927,16 @@
     showScreen('screen-summary');
   }
 
-  function summaryBox(label, value) {
-    return '<div class="summary-box"><span class="k">' + esc(label) + '</span><span class="v">' + esc(value) + '</span></div>';
+  function summaryBox(label, value, valueClass) {
+    return '<div class="summary-box"><span class="k">' + esc(label) + '</span><span class="v' +
+      (valueClass ? ' ' + valueClass : '') + '">' + esc(value) + '</span></div>';
   }
   function resultTag(ok) { return ok ? '<span class="tag ok">Doğru</span>' : '<span class="tag err">Yanlış</span>'; }
   function levelPill(code, label) {
     return '<span class="lvl-pill ' + escAttr(String(code).toLowerCase()) + '">' + esc(label) + '</span>';
   }
 
-  function caseFeedbackHtml(c) {
+  function caseFeedbackHtml(c, showConfidence) {
     var tri = c.triage;
     var patRows = c.pat.map(function (p) {
       return '<tr' + (p.explanation ? ' class="has-expl"' : '') + '><td><b>' + esc(p.component) + '</b></td>' +
@@ -798,13 +966,153 @@
       '<div class="triage-result"><span>Sizin kararınız: ' + levelPill(tri.user, tri.userLabel) + '</span>' +
         '<span class="sep" aria-hidden="true">·</span><span>Referans: ' + levelPill(tri.reference, tri.referenceLabel) + '</span>' +
         '<span class="sep" aria-hidden="true">·</span>' + triTags + '</div>' +
+      // Güven düzeyi: nötr bilgi satırı (Doğru/Yanlış etiketi, renk vurgusu veya yorum YOK).
+      (showConfidence ? '<p class="confidence-line">Güven düzeyiniz: ' + esc(confidenceText(c.confidence)) + '</p>' : '') +
       (tri.explanation ? '<p class="expl-block">' + esc(tri.explanation) + '</p>' : '') +
       '</article>';
   }
 
+  /* ------------------------------------------------------------------ Gelişimim */
+  /**
+   * Satır içi SVG öğrenme eğrisi. Masaüstünde 640×280 viewBox (sol 44, sağ 16, üst 16, alt 36);
+   * dar ekranda (compact) etiketler okunur kalsın diye yaklaşık 1:1 ölçekli 340×220 geometri kullanılır.
+   */
+  function curveSvgHtml(model, current, totalSessions, compact) {
+    var g = compact
+      ? { W: 340, H: 220, L: 34, R: 8, T: 14, B: 36, PAD: 16 }
+      : { W: 640, H: 280, L: 44, R: 16, T: 16, B: 36, PAD: 24 };
+    var W = g.W, H = g.H, L = g.L, R = g.R, T = g.T, B = g.B, PAD = g.PAD;
+    var plotW = W - L - R, plotH = H - T - B;
+    var r1 = function (n) { return Math.round(n * 10) / 10; };
+    var x = function (s) { return L + PAD + (s - 1) * (plotW - 2 * PAD) / Math.max(1, totalSessions - 1); };
+    var y = function (v) { return T + (1 - v) * plotH; };
+    var out = ['<svg class="curve-svg' + (compact ? ' compact' : '') + '" viewBox="0 0 ' + W + ' ' + H +
+      '" width="100%" role="img" aria-label="Oturumlara göre doğruluk grafiği">'];
+    if (current >= 1 && current <= totalSessions) {
+      out.push('<rect class="curve-current" x="' + r1(x(current) - 20) + '" y="' + T + '" width="40" height="' + plotH + '" rx="6"></rect>');
+    }
+    [0, 0.25, 0.5, 0.75, 1].forEach(function (v) {
+      out.push('<line class="curve-grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + r1(y(v)) + '" y2="' + r1(y(v)) + '"></line>');
+      out.push('<text class="curve-tick" x="' + (L - 6) + '" y="' + r1(y(v)) + '" text-anchor="end" dominant-baseline="middle">%' +
+        Math.round(v * 100) + '</text>');
+    });
+    for (var s = 1; s <= totalSessions; s++) {
+      out.push('<text class="curve-tick' + (s === current ? ' is-current' : '') + '" x="' + r1(x(s)) + '" y="' + (T + plotH + 16) +
+        '" text-anchor="middle">' + s + '</text>');
+    }
+    out.push('<text class="curve-axis" x="' + r1(L + plotW / 2) + '" y="' + (H - 3) + '" text-anchor="middle">Oturum</text>');
+    // Triyaj serisi en üstte kalsın diye ters sırayla çizilir.
+    var drawOrder = model.series.slice().reverse();
+    drawOrder.forEach(function (sr) {
+      sr.segments.forEach(function (seg) {
+        out.push('<line x1="' + r1(x(seg[0].session) + sr.dx) + '" y1="' + r1(y(seg[0].value)) +
+          '" x2="' + r1(x(seg[1].session) + sr.dx) + '" y2="' + r1(y(seg[1].value)) +
+          '" stroke="' + sr.color + '" stroke-width="' + sr.width + '"' + (sr.dash ? ' stroke-dasharray="' + sr.dash + '"' : '') +
+          ' stroke-linecap="round"></line>');
+      });
+    });
+    drawOrder.forEach(function (sr) {
+      sr.points.forEach(function (p) {
+        out.push('<circle cx="' + r1(x(p.session) + sr.dx) + '" cy="' + r1(y(p.value)) + '" r="' + (p.session === current ? 6 : 4) +
+          '" fill="' + sr.color + '" stroke="#ffffff" stroke-width="1.5"></circle>');
+      });
+    });
+    // Mevcut oturumun triyaj değeri, triyaj noktasının hemen sağında (son oturumda solunda): aynı oturumdaki
+    // diğer noktalar ±5 birim kaydırıldığından çakışmaz; beyaz hale çizgilerin üstünde de okunur tutar.
+    var tri = model.series[0];
+    var cp = tri.points.filter(function (p) { return p.session === current; })[0];
+    if (cp) {
+      var last = cp.session >= totalSessions;
+      var tx = x(cp.session) + tri.dx + (last ? -12 : 12);
+      var ty = y(cp.value) + 4;
+      var anchor = last ? 'end' : 'start';
+      out.push('<text class="curve-value" x="' + r1(tx) + '" y="' + r1(ty) + '" text-anchor="' + anchor + '" fill="' + tri.color +
+        '" stroke="#ffffff" stroke-width="4" stroke-linejoin="round" paint-order="stroke">%' + Math.round(cp.value * 100) + '</text>');
+    }
+    out.push('</svg>');
+    return out.join('');
+  }
+
+  function curveTableHtml(history, current, k, totalSessions, showConfidence) {
+    var bySession = {};
+    (history || []).forEach(function (h) { bySession[h.sessionNumber] = h; });
+    var rows = [
+      ['Triyaj kategorisi', function (h) { return h.triageExact + '/' + k; }],
+      ['PDÜ', function (h) { return h.pat + '/' + 3 * k; }],
+      ['Vital bulgular', function (h) { return h.vital + '/' + 5 * k; }],
+      ['Tehlikeli düşük triyaj', function (h) { return String(h.dangerousUnderTriage); }]
+    ];
+    if (showConfidence) {
+      rows.push(['Ortalama güven', function (h) { return h.confidenceMean === null ? '—' : '★ ' + fmtMean(h.confidenceMean); }]);
+    }
+    rows.push(['Süre', function (h) { return fmtDuration(h.totalTimeSeconds); }]);
+    var cur = function (s) { return s === current ? ' class="is-current"' : ''; };
+    var head = '<tr><th scope="col">Ölçüt</th>';
+    for (var s = 1; s <= totalSessions; s++) head += '<th scope="col"' + cur(s) + '>O' + s + '</th>';
+    head += '</tr>';
+    var body = rows.map(function (r) {
+      var tr = '<tr><th scope="row">' + esc(r[0]) + '</th>';
+      for (var s2 = 1; s2 <= totalSessions; s2++) {
+        var h = bySession[s2];
+        var v = !h || h.status === 'none' ? '—' : (h.status === 'partial' ? 'eksik' : r[1](h));
+        tr += '<td' + cur(s2) + '>' + esc(v) + '</td>';
+      }
+      return tr + '</tr>';
+    }).join('');
+    return '<div class="table-scroll"><table class="curve-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  var curveCompact = null;
+  function isCompactChart() { return window.innerWidth < 560; }
+  /** Ekran döndürülünce / pencere boyutu eşiği geçince yalnızca grafik yeniden çizilir. */
+  function onResize() {
+    if (currentScreen !== 'screen-summary' || !state.summary || !$('curveWrap')) return;
+    if (isCompactChart() === curveCompact) return;
+    curveCompact = isCompactChart();
+    var s = state.summary;
+    $('curveWrap').innerHTML = curveSvgHtml(learningCurveModel(s.history, s.casesPerSession), s.sessionNumber, s.totalSessions, curveCompact);
+  }
+
+  function learningCardHtml(s, showConfidence) {
+    var model = learningCurveModel(s.history, s.casesPerSession);
+    var legend = '<div class="curve-legend">' + model.series.map(function (sr) {
+      return '<span class="legend-item"><svg width="30" height="10" aria-hidden="true" focusable="false">' +
+        '<line x1="2" y1="5" x2="28" y2="5" stroke="' + sr.color + '" stroke-width="' + sr.width + '"' +
+        (sr.dash ? ' stroke-dasharray="' + sr.dash + '"' : '') + ' stroke-linecap="round"></line></svg>' + esc(sr.label) + '</span>';
+    }).join('') + '</div>';
+    curveCompact = isCompactChart();
+    return '<div class="card" id="learningCard"><h2>Gelişimim</h2>' +
+      '<p class="card-hint">Tamamladığınız oturumlardaki doğruluk oranlarınız; yalnızca tamamlanan oturumlar çizilir.</p>' +
+      legend + '<div id="curveWrap">' + curveSvgHtml(model, s.sessionNumber, s.totalSessions, curveCompact) + '</div>' +
+      (model.showSinglePointNote ? '<p class="note">Eğri, ikinci oturumu tamamladığınızda oluşacaktır.</p>' : '') +
+      curveTableHtml(s.history, s.sessionNumber, s.casesPerSession, s.totalSessions, showConfidence) +
+      '</div>';
+  }
+
+  /* ------------------------------------------------------------------ Başarımlar */
+  function badgesCardHtml(totals, k) {
+    var list = computeBadges(totals, k);
+    var earned = list.filter(function (b) { return b.earned; }).length;
+    return '<div class="card" id="badgesCard"><h2>Bu Oturumun Başarımları · ' + earned + '/' + list.length + '</h2>' +
+      '<div class="badge-grid" role="list">' + list.map(function (b) {
+        return '<div class="badge ' + (b.earned ? 'earned' : 'not-earned') + '" role="listitem" data-badge="' + escAttr(b.id) + '">' +
+          '<div class="medal" aria-hidden="true">' + esc(b.monogram) + '</div>' +
+          '<div class="badge-name">' + esc(b.name) + '</div>' +
+          '<div class="badge-crit">' + esc(b.criterion) + '</div>' +
+          (b.earned ? '<div class="badge-status">Kazanıldı</div>' : '<span class="sr-only">Kazanılmadı</span>') +
+          '</div>';
+      }).join('') + '</div>' +
+      (earned === 0 ? '<p class="note">Bu oturumda rozet kazanılmadı. Her oturum ayrı değerlendirilir.</p>' : '') +
+      '</div>';
+  }
+
+  /** Sayfa düzeni (§18.4): özet → vaka kartları → Gelişimim → Başarımlar → kapanış. */
   function renderSummary(s) {
     var t = s.totals;
+    var flags = state.session || {};
+    var showConfidence = flags.confidenceEnabled === true;
     var last = s.sessionNumber >= s.totalSessions;
+    var counts = t.confidenceCounts || {};
     var html =
       '<div class="card"><h1>Oturum ' + esc(s.sessionNumber) + ' · Toplu Geri Bildirim</h1>' +
         '<div class="summary-grid">' +
@@ -812,19 +1120,25 @@
           summaryBox('PDÜ', t.pat + ' / ' + t.patMax) +
           summaryBox('Vital bulgular', t.vital + ' / ' + t.vitalMax) +
           summaryBox('Toplam süre', fmtDuration(t.totalTimeSeconds)) +
+          (showConfidence
+            ? summaryBox('Güven dağılımı', '★ ' + (counts['1'] || 0) + ' · ★★ ' + (counts['2'] || 0) + ' · ★★★ ' + (counts['3'] || 0), 'v-small')
+            : '') +
         '</div>' +
         (t.dangerousUnderTriage > 0
           ? '<p class="notice danger">Bu oturumda ' + esc(t.dangerousUnderTriage) +
             ' Kırmızı alan vakası Sarı/Yeşil alana atandı (tehlikeli düşük triyaj).</p>'
           : '') +
       '</div>';
-    s.cases.forEach(function (c) { html += caseFeedbackHtml(c); });
+    s.cases.forEach(function (c) { html += caseFeedbackHtml(c, showConfidence); });
+    if (flags.learningCurveEnabled === true && s.history) html += learningCardHtml(s, showConfidence);
+    if (flags.badgesEnabled === true) html += badgesCardHtml(t, s.casesPerSession);
     html += '<div class="card"><p>Oturum ' + esc(s.sessionNumber) + ' tamamlandı. Yanıtlarınız kaydedildi. ' +
       (last ? 'Bu, çalışmanın son oturumuydu; katılımınız için teşekkür ederiz. '
             : 'Bir sonraki oturum araştırmacı tarafından duyurulacaktır. ') +
       'Lütfen vakaları ve geri bildirimleri kimseyle paylaşmayınız.</p></div>';
 
     state.submitted = true;
+    state.summary = s;
     $('summaryError').hidden = true;
     $('summaryContent').innerHTML = html;
     setHeader('Katılımcı ' + s.userId + ' · Oturum ' + s.sessionNumber + '/' + s.totalSessions + ' · Tamamlandı');

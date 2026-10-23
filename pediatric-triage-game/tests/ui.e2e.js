@@ -46,10 +46,19 @@ const MOCK_RUN = `<script>
 </script>`;
 
 /** Sunucu: aynı sahte e-tablo; "yeniden dağıtım" ile oturum değiştirilebilir. */
-function makeServer(session) {
-  const server = { g: loadCode({ session }), calls: [], failNext: {}, failAfterServer: {} };
+function makeServer(session, config) {
+  const server = { g: loadCode({ session, config }), calls: [], failNext: {}, failAfterServer: {} };
   server.g.ctx.initializeDatabase();
-  server.redeploy = (s) => { server.g = loadCode({ session: s, env: server.g.env }); };
+  server.redeploy = (s) => { server.g = loadCode({ session: s, config, env: server.g.env }); };
+  /** Kullanıcının satırlarında özetin ilk görüntülenme anını "dakika önce"ye çeker. */
+  server.setViewedAgo = (name, uid, minutes) => {
+    const sh = server.g.env.ss.getSheetByName(name);
+    const RH = JSON.parse(JSON.stringify(server.g.get('RESPONSE_HEADERS')));
+    const iso = new Date(Date.now() - minutes * 60000).toISOString();
+    for (let r = 2; r <= sh.getLastRow(); r++) {
+      if (sh.getRange(r, RH.indexOf('user_id') + 1).getValue() === uid) sh.getRange(r, RH.indexOf('feedback_viewed_time') + 1).setValue(iso);
+    }
+  };
   server.rows = (name) => server.g.env.ss.getSheetByName(name).rowObjects();
   return server;
 }
@@ -113,8 +122,8 @@ async function login(page, uid, honor = true) {
   await waitIdle(page);
 }
 
-/** Bir vakayı yanıtlar: answers = 8 karakterlik 'N'/'A' dizisi, triage = kod. */
-async function answerCase(page, answers, triage) {
+/** Bir vakayı yanıtlar: answers = 8 karakterlik 'N'/'A' dizisi, triage = kod, conf = '1'|'2'|'3' (null: seçme). */
+async function answerCase(page, answers, triage, conf = '2') {
   const fields = ['user_pat_appearance', 'user_pat_work_of_breathing', 'user_pat_circulation_to_skin',
     'user_temperature_classification', 'user_heart_rate_classification', 'user_respiratory_rate_classification',
     'user_blood_pressure_classification', 'user_spo2_classification'];
@@ -122,6 +131,7 @@ async function answerCase(page, answers, triage) {
     await page.click(`label[for="f_${fields[i]}_${answers[i] === 'A' ? 1 : 0}"]`);
   }
   if (triage) await page.click(`label[for="tri_${triage}"]`);
+  if (conf && await page.locator('#confidenceBlock').isVisible()) await page.click(`label[for="f_user_triage_confidence_${conf}"]`);
 }
 async function submit(page) { await page.click('#btnSubmit'); await waitIdle(page); }
 
@@ -166,11 +176,23 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
 
   assert.equal(await beforeUnloadBlocked(page), false, 'seçim yokken çıkış uyarısı yok');
   assert.ok(await page.locator('#btnSubmit').isDisabled());
-  await answerCase(page, 'NNNANNNN', null);
+  // T37: güven sorusu vaka başına bir kez, gönder düğmesinin hemen üstünde; PDÜ/vital bölümlerinde yok; varsayılan yok
+  assert.equal(await page.locator('input[name="user_triage_confidence"]').count(), 3);
+  assert.equal(await page.locator('#patList input[name="user_triage_confidence"], #vitalList input[name="user_triage_confidence"]').count(), 0);
+  assert.equal(await page.locator('input[name="user_triage_confidence"]:checked').count(), 0);
+  assert.equal(await text(page, '.confidence-q'), 'Bu vakadaki triyaj kararınızdan ne kadar eminsiniz?');
+  assert.deepEqual(await page.locator('.seg-conf label').allInnerTexts(), ['★ Emin değilim', '★★ Orta', '★★★ Kesinlikle eminim']);
+  assert.ok(await page.$eval('#confidenceBlock', (el) => el.nextElementSibling.id === 'btnSubmit'));
+  assert.equal(await text(page, '#submitHintText'),
+    'Göndermek için 8 sınıflandırmanın tümünü tamamlayın, bir triyaj kategorisi ve güven düzeyinizi seçin.');
+  await answerCase(page, 'NNNANNNN', null, null);
   assert.ok(await page.locator('#btnSubmit').isDisabled(), 'triyaj seçilmeden pasif (T16)');
   assert.ok(await visible(page, '#submitHint'));
   assert.equal(await beforeUnloadBlocked(page), true, 'T35');
   await page.click('label[for="tri_YESIL"]');
+  assert.ok(await page.locator('#btnSubmit').isDisabled(), 'güven seçilmeden pasif (T38)');
+  assert.equal(await text(page, '#answerCount'), '(9 / 10)');
+  await page.click('label[for="f_user_triage_confidence_3"]');
   assert.ok(await page.locator('#btnSubmit').isEnabled());
   assert.equal(await visible(page, '#submitHint'), false);
   await shot(page, 'desktop-case1');
@@ -180,19 +202,20 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
   assert.equal(await page.locator('#screen-case .tag').count(), 0, 'doğruluk bilgisi gösterilmez (T17)');
   assert.doesNotMatch(await page.locator('#screen-case').innerText(), /Yanlış|Tam uyum|Referans:|basamak/);
   assert.ok(await page.locator('#f_user_pat_appearance_0').isDisabled());
-  assert.equal(await visible(page, '#submitCard'), false);
+  assert.equal(await visible(page, '#actionCard'), false);
+  assert.ok(await page.locator('#f_user_triage_confidence_3').isDisabled(), 'güven de kilitlenir');
   assert.equal(await beforeUnloadBlocked(page), false);
   await page.click('#btnNext');
 
   // Vaka 2 (CASE-002, KIRMIZI) — ağ hatası ve yanıtı kaybolan gönderim
   assert.equal(await text(page, '#headerMeta'), 'Katılımcı P-014 · Oturum 1/5 · Vaka 2/3');
   assert.equal(await page.locator('.progress .dot.done').count(), 1);
-  await answerCase(page, 'AAAAAANA', 'YESIL');   // tehlikeli düşük triyaj
+  await answerCase(page, 'AAAAAANA', 'YESIL', '1');   // tehlikeli düşük triyaj
   server.failNext.submitCase = 'Ağ bağlantısı koptu';
   await submit(page);
   assert.equal(await text(page, '#caseError'), 'Bağlantı hatası: Ağ bağlantısı koptu — lütfen tekrar deneyin.');
   assert.ok(await page.locator('#btnSubmit').isEnabled(), 'düğme yeniden etkin');
-  assert.equal(await page.locator('#screen-case input[type=radio]:checked').count(), 9, 'yanıtlar korunur');
+  assert.equal(await page.locator('#screen-case input[type=radio]:checked').count(), 10, 'yanıtlar korunur');
   assert.equal(server.rows('Session1').length, 1);
 
   server.failAfterServer.submitCase = 'Zaman aşımı';
@@ -217,7 +240,8 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
   assert.equal(await text(page2, '#headerMeta'), 'Katılımcı P-014 · Oturum 1/5 · Tamamlandı');
   assert.equal(await text(page2, '#summaryContent h1'), 'Oturum 1 · Toplu Geri Bildirim');
   const boxes = await page2.locator('.summary-box').allInnerTexts();
-  assert.deepEqual(boxes.map((b) => b.split('\n')[0]), ['Triyaj kategorisi', 'PDÜ', 'Vital bulgular', 'Toplam süre']);
+  assert.deepEqual(boxes.map((b) => b.split('\n')[0]), ['Triyaj kategorisi', 'PDÜ', 'Vital bulgular', 'Toplam süre', 'Güven dağılımı']);
+  assert.match(boxes[4], /★ 1 · ★★ 1 · ★★★ 1$/);
   assert.match(boxes[0], /1 \/ 3$/);
   assert.match(boxes[1], /9 \/ 9$/);
   assert.match(boxes[2], /14 \/ 15$/);
@@ -237,6 +261,29 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
   assert.match(card3, /1 basamak yüksek triyaj/);
   assert.match(card3, /SpO₂\s+%99\s+Anormal\s+Normal\s+Yanlış/);
   assert.match(await page2.locator('.case-fb').nth(0).innerText(), /Tam uyum/);
+  // T41: güven nötr satır olarak; Doğru/Yanlış etiketi yok
+  assert.deepEqual(await page2.locator('.confidence-line').allInnerTexts(), [
+    'Güven düzeyiniz: ★★★ Kesinlikle eminim', 'Güven düzeyiniz: ★ Emin değilim', 'Güven düzeyiniz: ★★ Orta'
+  ]);
+  assert.equal(await page2.locator('.confidence-line .tag').count(), 0);
+  // Gelişimim (T44): yalnızca O1 → tek nokta seti + not; tablo O2–O5 "—"
+  assert.ok(await visible(page2, '#learningCard'));
+  assert.equal(await page2.locator('#learningCard svg.curve-svg[role="img"]').getAttribute('aria-label'), 'Oturumlara göre doğruluk grafiği');
+  assert.equal(await page2.locator('#learningCard svg.curve-svg circle').count(), 3);
+  assert.equal(await page2.locator('#learningCard svg.curve-svg line[stroke]').count(), 0);
+  assert.match(await text(page2, '#learningCard'), /Eğri, ikinci oturumu tamamladığınızda oluşacaktır\./);
+  const curveRows = await page2.locator('.curve-table tbody tr').allInnerTexts();
+  assert.deepEqual(curveRows.map((r) => r.split('\t')[0]),
+    ['Triyaj kategorisi', 'PDÜ', 'Vital bulgular', 'Tehlikeli düşük triyaj', 'Ortalama güven', 'Süre']);
+  assert.deepEqual(curveRows[0].split('\t'), ['Triyaj kategorisi', '1/3', '—', '—', '—', '—']);
+  assert.deepEqual(curveRows[4].split('\t').slice(0, 2), ['Ortalama güven', '★ 2,0']);
+  assert.equal(await page2.locator('.curve-table thead .is-current').innerText(), 'O1');
+  // Başarımlar: yalnızca bu oturum (PDÜ 9/9 → Tam Üçgen); Kırmızı vaka Yeşil'e atandı → Kırmızı Nöbetçi yok
+  assert.equal(await text(page2, '#badgesCard h2'), 'Bu Oturumun Başarımları · 1/4');
+  assert.deepEqual(await page2.$$eval('#badgesCard .badge.earned', (els) => els.map((e) => e.dataset.badge)), ['FULL_TRIANGLE']);
+  assert.doesNotMatch(await text(page2, '#badgesCard'), /Daha önce|YENİ/);
+  const order = await page2.$$eval('#summaryContent > .card', (els) => els.map((e) => e.id || e.className));
+  assert.deepEqual(order.slice(-3), ['learningCard', 'badgesCard', 'card'], 'özet → vakalar → Gelişimim → Başarımlar → kapanış');
   assert.match(await page2.locator('#summaryContent').innerText(),
     /Oturum 1 tamamlandı\. Yanıtlarınız kaydedildi\. Bir sonraki oturum araştırmacı tarafından duyurulacaktır\./);
   assert.equal(await beforeUnloadBlocked(page2), false);
@@ -245,15 +292,31 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
   const viewed = server.rows('Session1');
   assert.ok(viewed.every((r) => r.feedback_viewed === 1 && r.feedback_viewed_time));
 
-  // Tamamlamış katılımcı yeniden girer → doğrudan özet (T31)
+  // T31/T49: pencere içinde yeniden giriş → doğrudan özet
   const page3 = await openPage(server);
   await login(page3, 'p-014');
   await page3.waitForSelector('#screen-summary:not([hidden])');
   assert.equal(await page3.locator('.case-fb').count(), 3);
 
-  assert.deepEqual([...page2.errors, ...page3.errors], []);
+  // T50: ilk görüntülemeden 30 dk sonra → kilit ekranı; vaka/özet içeriği yok
+  server.setViewedAgo('Session1', 'P-014', 31);
+  const page4 = await openPage(server);
+  await login(page4, 'P-014');
+  assert.ok(await visible(page4, '#screen-locked'));
+  assert.equal(await text(page4, '#lockedTitle'), 'Oturum 1 tamamlandı');
+  assert.equal(await text(page4, '#lockedMsg'),
+    'Bu oturumu (Oturum 1) tamamladınız; yanıtlarınız kaydedildi. Bir sonraki oturum açıldığında aynı katılımcı kodunuzla giriş yapabilirsiniz.');
+  assert.match(await text(page4, '#screen-locked'), /Bu pencereyi kapatabilirsiniz\./);
+  assert.equal(await page4.locator('#screen-locked button, #screen-locked a').count(), 0);
+  assert.equal(await text(page4, '#headerMeta'), 'Katılımcı P-014 · Oturum 1/5 · Tamamlandı');
+  assert.equal(await page4.locator('.case-fb, #patList .pat-item').count(), 0);
+  // Açık olan özet sayfası süre dolsa da ekranda kalır
+  assert.ok(await visible(page3, '#screen-summary'));
+
+  assert.deepEqual([...page2.errors, ...page3.errors, ...page4.errors], []);
   await page2.close();
   await page3.close();
+  await page4.close();
 });
 
 test('mobil 360 px: yatay kaydırma yok, triyaj tek sütun (T33)', async () => {
@@ -268,6 +331,8 @@ test('mobil 360 px: yatay kaydırma yok, triyaj tek sütun (T33)', async () => {
   const stripe = await page.$eval('label[for="tri_KIRMIZI"]', (el) => getComputedStyle(el).borderLeftWidth);
   assert.equal(stripe, '6px');
   await answerCase(page, 'NNNAANNN', 'SARI');
+  assert.equal(await page.$eval('.seg-conf', (el) => getComputedStyle(el).flexDirection), 'column', 'güven seçenekleri mobilde alt alta');
+  await noHorizontalScroll(page);
   await shot(page, 'mobile-case');
   await submit(page);
   await page.click('#btnNext');
@@ -278,6 +343,8 @@ test('mobil 360 px: yatay kaydırma yok, triyaj tek sütun (T33)', async () => {
   await submit(page);
   await page.waitForSelector('#screen-summary:not([hidden])');
   await noHorizontalScroll(page);
+  assert.equal(await page.$eval('.badge-grid', (el) => getComputedStyle(el).gridTemplateColumns.split(' ').length), 2);
+  assert.equal(await text(page, '#badgesCard h2'), 'Bu Oturumun Başarımları · 4/4');
   assert.equal(await page.locator('.notice.danger').count(), 0);
   assert.equal(await page.locator('.fb-table .col-value').first().isVisible(), false, 'Değer sütunu mobilde satır içine taşınır');
   const wrapped = await page.$$eval('.fb-table tbody td + td', (cells) => cells
@@ -331,6 +398,15 @@ test('kapalı oturum, yapılandırma hatası ve son oturum kapanış metni (T06,
   }
   await lp.waitForSelector('#screen-summary:not([hidden])');
   assert.match(await lp.locator('#summaryContent').innerText(), /Bu, çalışmanın son oturumuydu; katılımınız için teşekkür ederiz\./);
+  // Son oturumda değer etiketi noktanın soluna geçer ve hiçbir noktayla çakışmaz
+  assert.equal(await lp.locator('#learningCard .curve-value').getAttribute('text-anchor'), 'end');
+  assert.equal(await lp.evaluate(() => {
+    const t = document.querySelector('#learningCard .curve-value').getBoundingClientRect();
+    return Array.from(document.querySelectorAll('#learningCard svg.curve-svg circle')).some((c) => {
+      const b = c.getBoundingClientRect();
+      return !(b.right <= t.left || b.left >= t.right || b.bottom <= t.top || b.top >= t.bottom);
+    });
+  }), false);
   await lp.close();
 });
 
@@ -392,4 +468,93 @@ test('XSS ve medya: metin kaçışlı basılır, görsel hatasında bağlantı, 
   assert.equal(await page.locator('.media-wrap').count(), 2, 'javascript: bağlantısı istemciye hiç gitmez');
   assert.deepEqual(page.errors, []);
   await page.close();
+});
+
+test('Gelişimim çok oturumlu: ardışık oturumlar birleşir, atlanan oturum çizgiyi keser (T42, T43)', async () => {
+  const server = makeServer(1);
+  async function play(uid, triage) {
+    const page = await openPage(server);
+    await login(page, uid);
+    for (let i = 0; i < 3; i++) {
+      await answerCase(page, 'NNNNNNNN', triage[i], String(i + 1));
+      await submit(page);
+      if (i < 2) await page.click('#btnNext');
+    }
+    await page.waitForSelector('#screen-summary:not([hidden])');
+    return page;
+  }
+  const triLines = (page) => page.locator('#learningCard svg.curve-svg line[stroke="#16577d"]').count();
+  (await play('P-CURVE', ['YESIL', 'KIRMIZI', 'SARI'])).close();
+  (await play('P-GAP', ['YESIL', 'YESIL', 'YESIL'])).close();
+  server.redeploy(2);
+  const p2 = await play('P-CURVE', ['SARI', 'YESIL', 'SARI']);
+  assert.equal(await triLines(p2), 1, 'O1–O2 birleşik');
+  assert.equal(await p2.locator('#learningCard svg.curve-svg circle').count(), 6);
+  assert.doesNotMatch(await text(p2, '#learningCard'), /Eğri, ikinci oturumu/);
+  const row = (await p2.locator('.curve-table tbody tr').first().innerText()).split('\t');
+  assert.deepEqual(row, ['Triyaj kategorisi', '3/3', '2/3', '—', '—', '—']);
+  assert.equal(await p2.locator('#learningCard .curve-value').innerHTML(), '%67');
+  assert.equal(await p2.locator('#learningCard svg.curve-svg').getAttribute('viewBox'), '0 0 640 280');
+  const labelOverlapsPoint = () => p2.evaluate(() => {
+    const t = document.querySelector('#learningCard .curve-value').getBoundingClientRect();
+    return Array.from(document.querySelectorAll('#learningCard svg.curve-svg circle')).some((c) => {
+      const b = c.getBoundingClientRect();
+      return !(b.right <= t.left || b.left >= t.right || b.bottom <= t.top || b.top >= t.bottom);
+    });
+  });
+  assert.equal(await labelOverlapsPoint(), false, 'değer etiketi noktalarla çakışmaz');
+  await shot(p2, 'desktop-curve-o2');
+  // Ekran daralınca (telefon / döndürme) grafik kompakt geometride yeniden çizilir; etiketler okunur kalır
+  await p2.setViewportSize(MOBILE);
+  await p2.waitForFunction(() => document.querySelector('#learningCard svg.curve-svg').getAttribute('viewBox') === '0 0 340 220');
+  assert.ok(await p2.$eval('#learningCard .curve-tick', (el) => el.getBoundingClientRect().height) >= 9, 'mobil etiket ≥ 9 px');
+  assert.equal(await labelOverlapsPoint(), false);
+  await noHorizontalScroll(p2);
+  await shot(p2, 'mobile-curve-o2');
+  await p2.close();
+  server.redeploy(3);
+  const p3 = await play('P-GAP', ['KIRMIZI', 'SARI', 'YESIL']);
+  assert.equal(await triLines(p3), 0, 'O2 atlandı → O1 ve O3 birleştirilmez');
+  assert.equal(await p3.locator('#learningCard svg.curve-svg circle').count(), 6);
+  assert.deepEqual((await p3.locator('.curve-table tbody tr').first().innerText()).split('\t'),
+    ['Triyaj kategorisi', '1/3', '—', '3/3', '—', '—']);
+  assert.deepEqual([...p2.errors, ...p3.errors], []);
+  await p3.close();
+});
+
+test('T48 — bayraklar kapalıyken ilgili arayüz parçaları gizlenir', async () => {
+  const noConf = makeServer(1, { ENABLE_CONFIDENCE: false });
+  const p1 = await openPage(noConf);
+  await login(p1, 'P-NC');
+  assert.equal(await p1.locator('#confidenceBlock').isVisible(), false);
+  assert.equal(await p1.locator('input[name="user_triage_confidence"]').count(), 0);
+  assert.equal(await text(p1, '#submitHintText'), 'Göndermek için 8 sınıflandırmanın tümünü tamamlayın ve bir triyaj kategorisi seçin.');
+  await answerCase(p1, 'NNNANNNN', 'YESIL', null);
+  assert.ok(await p1.locator('#btnSubmit').isEnabled(), '9 seçimle gönderilebilir');
+  for (let i = 0; i < 3; i++) {
+    if (i > 0) await answerCase(p1, 'NNNNNNNN', 'SARI', null);
+    await submit(p1);
+    if (i < 2) await p1.click('#btnNext');
+  }
+  await p1.waitForSelector('#screen-summary:not([hidden])');
+  assert.equal(await p1.locator('.confidence-line').count(), 0);
+  assert.ok(!(await p1.locator('.summary-box').allInnerTexts()).some((b) => b.startsWith('Güven')));
+  assert.ok(!(await text(p1, '.curve-table')).includes('Ortalama güven'));
+  assert.ok(noConf.rows('Session1').every((r) => r.user_triage_confidence === ''));
+  await p1.close();
+
+  const noCurveNoBadges = makeServer(1, { ENABLE_LEARNING_CURVE: false, ENABLE_BADGES: false });
+  const p2 = await openPage(noCurveNoBadges);
+  await login(p2, 'P-NB');
+  for (let i = 0; i < 3; i++) {
+    await answerCase(p2, 'NNNNNNNN', 'SARI');
+    await submit(p2);
+    if (i < 2) await p2.click('#btnNext');
+  }
+  await p2.waitForSelector('#screen-summary:not([hidden])');
+  assert.equal(await p2.locator('#learningCard').count(), 0);
+  assert.equal(await p2.locator('#badgesCard').count(), 0);
+  assert.equal(await p2.locator('.confidence-line').count(), 3);
+  assert.deepEqual([...p1.errors, ...p2.errors], []);
+  await p2.close();
 });

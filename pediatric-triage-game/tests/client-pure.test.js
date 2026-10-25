@@ -18,44 +18,71 @@ const j = (x) => JSON.parse(JSON.stringify(x));
 const badges = (t) => j(ctx.computeBadges(t, 3));
 const earned = (t) => badges(t).filter((b) => b.earned).map((b) => b.id);
 
-const PERFECT = { triageExact: 3, pat: 9, vital: 15, redAreaCorrect: true, greenAreaCorrect: true };
+const PERFECT = { triageExact: 3, pat: 9, vital: 15, perfectCases: 3 };
 
-test('rozet seti: 4 rozet, tablo sırasıyla; 3 grupta "Renk Gözü" yok', () => {
+test('rozet seti: TÜ · VU · Tİ · KV (bu sırayla); Kırmızı Nöbetçi ve Renk Gözü yok', () => {
   const list = badges(PERFECT);
   assert.deepEqual(list.map((b) => [b.id, b.name, b.monogram]), [
-    ['RED_GUARD', 'Kırmızı Nöbetçi', 'KN'],
     ['FULL_TRIANGLE', 'Tam Üçgen', 'TÜ'],
     ['VITAL_MASTER', 'Vital Ustası', 'VU'],
-    ['BULLSEYE', 'Tam İsabet', 'Tİ']
+    ['BULLSEYE', 'Tam İsabet', 'Tİ'],
+    ['PERFECT_CASE', 'Kusursuz Vaka', 'KV']
   ]);
   assert.ok(list.every((b) => b.earned));
-  assert.match(list[1].criterion, /9\/9/);
-  assert.match(list[2].criterion, /15\/15/);
-  assert.match(list[3].criterion, /3\/3/);
+  assert.match(list[0].criterion, /9\/9/);
+  assert.match(list[1].criterion, /15\/15/);
+  assert.match(list[2].criterion, /3\/3/);
+  assert.match(list[3].criterion, /En az bir vakada PDÜ, vital bulgular ve triyaj kategorisinin tamamını doğru yapmak/);
 });
 
-test('T46 — her vakaya KIRMIZI veren RED_GUARD kazanamaz', () => {
-  // Kırmızı vaka doğru, Yeşil vaka Kırmızı'ya atandı → yeşil yanlış
-  assert.deepEqual(earned({ triageExact: 1, pat: 9, vital: 15, redAreaCorrect: true, greenAreaCorrect: false }),
-    ['FULL_TRIANGLE', 'VITAL_MASTER']);
-  // Tam doğru triyaj → BULLSEYE ve RED_GUARD birlikte
-  assert.deepEqual(earned({ triageExact: 3, pat: 7, vital: 12, redAreaCorrect: true, greenAreaCorrect: true }),
-    ['RED_GUARD', 'BULLSEYE']);
-  // Oturumda Kırmızı vaka yoksa (null) RED_GUARD kazanılmaz
-  assert.ok(!earned({ triageExact: 3, pat: 9, vital: 15, redAreaCorrect: null, greenAreaCorrect: true }).includes('RED_GUARD'));
+test('Kusursuz Vaka: en az bir kusursuz vaka yeter; diğer rozetlerden bağımsız', () => {
+  // Bir vaka kusursuz, diğerlerinde hata → yalnızca KV
+  assert.deepEqual(earned({ triageExact: 1, pat: 7, vital: 12, perfectCases: 1 }), ['PERFECT_CASE']);
+  // Toplamlar tam ama hatalar farklı vakalarda olsa bile kusursuz vaka yoksa KV yok
+  assert.deepEqual(earned({ triageExact: 3, pat: 8, vital: 14, perfectCases: 0 }), ['BULLSEYE']);
+  assert.deepEqual(earned({ triageExact: 2, pat: 9, vital: 15, perfectCases: 0 }), ['FULL_TRIANGLE', 'VITAL_MASTER']);
+  // Eksik / bozuk alan → kazanılmaz
+  assert.ok(!earned({ triageExact: 3, pat: 9, vital: 15 }).includes('PERFECT_CASE'));
+  assert.ok(!earned({ perfectCases: '' }).includes('PERFECT_CASE'));
 });
 
 test('T47 — oturum bağımsızlığı: yalnızca mevcut toplamlar; geçmiş parametresi yok', () => {
   assert.equal(ctx.computeBadges.length, 2, 'computeBadges(totals, casesPerSession)');
   // O1'de 4/4 kazanılmış olsa da O2 kartı yalnızca O2 toplamlarına bakar
-  const o2 = { triageExact: 2, pat: 9, vital: 13, redAreaCorrect: true, greenAreaCorrect: true };
-  assert.deepEqual(earned(o2), ['RED_GUARD', 'FULL_TRIANGLE']);
+  const o2 = { triageExact: 2, pat: 9, vital: 13, perfectCases: 1 };
+  assert.deepEqual(earned(o2), ['FULL_TRIANGLE', 'PERFECT_CASE']);
   assert.ok(!earned(o2).includes('BULLSEYE'));
   assert.deepEqual(earned({}), []);
   assert.deepEqual(earned(null), []);
   // Güven ve süre hiçbir rozeti etkilemez
   assert.deepEqual(earned(Object.assign({ confidenceMean: 1, confidenceCounts: { 1: 3 }, totalTimeSeconds: 9999 }, PERFECT)),
     earned(PERFECT));
+});
+
+test('vaka zamanlayıcısı: gizli süre, yenileme boşluğu ve okuma', () => {
+  const T0 = 1000000;
+  let t = j(ctx.timerStart(T0, false));
+  assert.deepEqual(t, { startMs: T0, hiddenMs: 0, hiddenSince: null, lastSeenMs: T0, frozen: null });
+  t = j(ctx.timerVisibility(t, T0 + 30000, true));            // 30. sn sekme gizlendi
+  t = j(ctx.timerVisibility(t, T0 + 40000, true));            // gizliyken tekrar kayıt: başlangıç değişmez
+  assert.equal(t.hiddenSince, T0 + 30000);
+  assert.deepEqual(j(ctx.timerRead(t, T0 + 50000)), { responseTimeSeconds: 50, hiddenTimeSeconds: 20 });
+  t = j(ctx.timerVisibility(t, T0 + 50000, false));           // 50. sn geri döndü
+  assert.deepEqual([t.hiddenMs, t.hiddenSince], [20000, null]);
+  t = j(ctx.timerVisibility(t, T0 + 60000, false));           // görünürken düzenli kayıt (lastSeenMs)
+  // 60. sn'de sayfa yenilendi / kapandı, 75. sn'de aynı vakaya dönüldü: aradaki 15 sn gizli sayılır
+  t = j(ctx.timerResume(t, T0 + 75000, false));
+  assert.deepEqual([t.startMs, t.hiddenMs, t.lastSeenMs], [T0, 35000, T0 + 75000]);
+  assert.deepEqual(j(ctx.timerRead(t, T0 + 100000)), { responseTimeSeconds: 100, hiddenTimeSeconds: 35 });
+  // Gizliyken kapanan sayfa: boşluk gizlenme anından itibaren sayılır
+  let u = j(ctx.timerVisibility(j(ctx.timerStart(T0, false)), T0 + 10000, true));
+  u = j(ctx.timerResume(Object.assign(u, { lastSeenMs: T0 + 12000 }), T0 + 70000, false));
+  assert.equal(u.hiddenMs, 60000);
+  // Dondurulmuş değerler yenilemeden sonra korunur
+  const frozen = { responseTimeSeconds: 42.5, hiddenTimeSeconds: 1 };
+  assert.deepEqual(j(ctx.timerResume(Object.assign(j(ctx.timerStart(T0, false)), { frozen }), T0 + 5000, false)).frozen, frozen);
+  // Saat geri alınırsa gizli süre toplamı aşmaz ve negatif olmaz
+  assert.deepEqual(j(ctx.timerRead(j(ctx.timerStart(T0, true)), T0 - 2000)), { responseTimeSeconds: -2, hiddenTimeSeconds: 0 });
 });
 
 test('T42 — O1 ve O2 tamamlanmış: ardışık noktalar birleşir', () => {

@@ -421,7 +421,10 @@
   var HINT_WITH_CONF = 'Göndermek için 8 sınıflandırmanın tümünü tamamlayın, bir triyaj kategorisi ve güven düzeyinizi seçin.';
 
   // Bu hatalarda vaka ekranında kalmanın anlamı yoktur: mesaj + "Sayfayı yenile".
-  var BLOCKING_CODES = { E_SESSION_CHANGED: true, E_OUT_OF_ORDER: true, E_CLOSED: true, E_CASE_NOT_IN_SESSION: true, E_CONFIG: true };
+  var BLOCKING_CODES = {
+    E_SESSION_CHANGED: true, E_OUT_OF_ORDER: true, E_CLOSED: true, E_CASE_NOT_IN_SESSION: true, E_CONFIG: true,
+    E_CASE_VERSION_CHANGED: true, E_PARTICIPANT_UNKNOWN: true
+  };
 
   /* ------------------------------------------------------------------ Durum */
   var state = {
@@ -430,7 +433,8 @@
     queue: [],            // tamamlanmamış vakalar (session_order sırasıyla)
     idx: 0,
     answers: {},
-    startTime: null,
+    timer: null,          // vaka zamanlayıcısı (timerStart … timerRead)
+    timerKey: '',         // zamanlayıcının localStorage anahtarı
     submitting: false,
     submitted: false
   };
@@ -448,11 +452,8 @@
     return (v === null || v === undefined || v === '' || !isFinite(Number(v))) ? '—' : dec(Number(v).toFixed(1));
   }
 
-  /** Rozetler: yalnızca MEVCUT oturumun toplamlarından (3 grupta "Renk Gözü" = "Tam İsabet" olduğundan yoktur). */
+  /** Rozetler: yalnızca MEVCUT oturumun toplamlarından. */
   var BADGE_DEFS = [
-    { id: 'RED_GUARD', name: 'Kırmızı Nöbetçi', monogram: 'KN',
-      criterion: function () { return 'Kırmızı vakayı Kırmızı alana ve Yeşil vakayı Yeşil alana atamak'; },
-      earned: function (t) { return t.redAreaCorrect === true && t.greenAreaCorrect === true; } },
     { id: 'FULL_TRIANGLE', name: 'Tam Üçgen', monogram: 'TÜ',
       criterion: function (k) { return 'PDÜ\'nün tüm bileşenlerini doğru sınıflandırmak (' + 3 * k + '/' + 3 * k + ')'; },
       earned: function (t, k) { return t.pat === 3 * k; } },
@@ -461,7 +462,10 @@
       earned: function (t, k) { return t.vital === 5 * k; } },
     { id: 'BULLSEYE', name: 'Tam İsabet', monogram: 'Tİ',
       criterion: function (k) { return 'Tüm triyaj kategorilerini doğru seçmek (' + k + '/' + k + ')'; },
-      earned: function (t, k) { return t.triageExact === k; } }
+      earned: function (t, k) { return t.triageExact === k; } },
+    { id: 'PERFECT_CASE', name: 'Kusursuz Vaka', monogram: 'KV',
+      criterion: function () { return 'En az bir vakada PDÜ, vital bulgular ve triyaj kategorisinin tamamını doğru yapmak'; },
+      earned: function (t) { return Number(t.perfectCases) >= 1; } }
   ];
 
   /** Yalnızca mevcut oturumun toplamlarını alır; geçmiş parametresi YOKTUR. */
@@ -504,6 +508,36 @@
                  points: points, segments: segments };
       })
     };
+  }
+
+  /**
+   * Vaka zamanlayıcısı; zaman (ms) dışarıdan verilir.
+   * Durum: { startMs, hiddenMs, hiddenSince, lastSeenMs, frozen }. Sayfanın gizli kaldığı ve
+   * kapalı olduğu süre hiddenMs'te birikir: etkin süre = toplam süre − gizli süre.
+   */
+  function timerStart(nowMs, hidden) {
+    return { startMs: nowMs, hiddenMs: 0, hiddenSince: hidden ? nowMs : null, lastSeenMs: nowMs, frozen: null };
+  }
+  /** Sayfa yeniden açıldığında (yenileme, sekmeye dönüş): aradaki süre gizli sayılır. */
+  function timerResume(t, nowMs, hidden) {
+    var gapFrom = typeof t.hiddenSince === 'number' ? t.hiddenSince : t.lastSeenMs;
+    return { startMs: t.startMs, hiddenMs: t.hiddenMs + Math.max(0, nowMs - gapFrom),
+             hiddenSince: hidden ? nowMs : null, lastSeenMs: nowMs, frozen: t.frozen || null };
+  }
+  /** Görünürlük değişimi ya da düzenli "sayfa açık" kaydı. */
+  function timerVisibility(t, nowMs, hidden) {
+    var hiddenMs = t.hiddenMs;
+    var since = typeof t.hiddenSince === 'number' ? t.hiddenSince : null;
+    if (hidden && since === null) since = nowMs;
+    if (!hidden && since !== null) { hiddenMs += Math.max(0, nowMs - since); since = null; }
+    return { startMs: t.startMs, hiddenMs: hiddenMs, hiddenSince: since, lastSeenMs: nowMs, frozen: t.frozen || null };
+  }
+  /** Gönderilecek süreler (0,1 sn); gizli süre toplam süreyi aşamaz. */
+  function timerRead(t, nowMs) {
+    var total = nowMs - t.startMs;
+    var hidden = t.hiddenMs + (typeof t.hiddenSince === 'number' ? Math.max(0, nowMs - t.hiddenSince) : 0);
+    return { responseTimeSeconds: Math.round(total / 100) / 10,
+             hiddenTimeSeconds: Math.round(Math.max(0, Math.min(hidden, total)) / 100) / 10 };
   }
   /* @pure-end */
 
@@ -602,6 +636,51 @@
     });
   }
 
+  /* ------------------------------------------------------------------ Vaka zamanlayıcısı
+   * Durum localStorage'da tutulur: sayfa yenilense veya sekme kapanıp aynı vakaya dönülse de
+   * başlangıç korunur. Depolama kullanılamazsa (ör. gizli mod) yalnızca bellekte çalışır. */
+  var TIMER_PREFIX = 'pt:';
+  var TIMER_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+
+  function storageGet(key) { try { return window.localStorage.getItem(key); } catch (e) { return null; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(key, value); } catch (e) { /* depolama yok */ } }
+  function storageRemove(key) { try { window.localStorage.removeItem(key); } catch (e) { /* depolama yok */ } }
+
+  /** Anahtar vaka sürümünü içerir: güncellenen vaka yeni bir zamanlayıcıyla başlar. */
+  function timerKey(c) {
+    var s = state.session;
+    return TIMER_PREFIX + s.userId + ':' + s.sessionNumber + ':' + c.case_id + ':v' + c.case_version;
+  }
+  function loadTimer(key) {
+    try {
+      var t = JSON.parse(storageGet(key) || 'null');
+      return t && typeof t.startMs === 'number' && typeof t.hiddenMs === 'number' && typeof t.lastSeenMs === 'number' ? t : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function saveTimer() {
+    if (state.timer && state.timerKey) storageSet(state.timerKey, JSON.stringify(state.timer));
+  }
+  /** visibilitychange, pagehide ve 15 sn'lik düzenli kayıt: yalnızca yanıtlanmakta olan vaka için. */
+  function touchTimer() {
+    if (currentScreen !== 'screen-case' || !state.timer || state.submitted) return;
+    state.timer = timerVisibility(state.timer, Date.now(), document.visibilityState === 'hidden');
+    saveTimer();
+  }
+  /** 7 günden eski veya bozuk zamanlayıcı kayıtlarını siler. */
+  function pruneTimers() {
+    try {
+      var ls = window.localStorage;
+      for (var i = ls.length - 1; i >= 0; i--) {
+        var key = ls.key(i);
+        if (!key || key.indexOf(TIMER_PREFIX) !== 0) continue;
+        var t = loadTimer(key);
+        if (!t || Date.now() - t.startMs > TIMER_MAX_AGE_MS) ls.removeItem(key);
+      }
+    } catch (e) { /* depolama yok */ }
+  }
+
   /* ------------------------------------------------------------------ Açılış */
   function boot() {
     $('appFooter').textContent = 'Pediatrik Triyaj Ciddi Oyunu · v' + BOOT.appVersion;
@@ -611,10 +690,14 @@
     $('savedCard').addEventListener('click', function (e) { if (e.target && e.target.id === 'btnNext') nextCase(); });
     $('btnRetrySummary').addEventListener('click', loadSummary);
     document.addEventListener('click', function (e) {
-      if (e.target && e.target.getAttribute && e.target.getAttribute('data-action') === 'reload') window.location.reload();
+      if (e.target && e.target.getAttribute && e.target.getAttribute('data-action') === 'reload') resetToLogin();
     });
     window.addEventListener('beforeunload', onBeforeUnload);
     window.addEventListener('resize', onResize);
+    document.addEventListener('visibilitychange', touchTimer);
+    window.addEventListener('pagehide', touchTimer);
+    window.setInterval(touchTimer, 15000);
+    pruneTimers();
 
     if (BOOT.activeSession === -1) return showConfigError(MSG.E_CONFIG);
     if (BOOT.activeSession === 0) return showClosed(MSG.E_CLOSED);
@@ -775,7 +858,13 @@
     updateSubmitState();
 
     showScreen('screen-case');
-    state.startTime = new Date();
+    // Aynı vakaya (aynı sürüm) dönülürse başlangıç zamanı ve gizli süre korunur.
+    var now = Date.now();
+    var hidden = document.visibilityState === 'hidden';
+    state.timerKey = timerKey(c);
+    var saved = loadTimer(state.timerKey);
+    state.timer = saved ? timerResume(saved, now, hidden) : timerStart(now, hidden);
+    saveTimer();
   }
 
   function onCaseChange(e) {
@@ -816,13 +905,20 @@
     if (state.submitting || state.submitted || !isComplete()) return;
     var c = currentCase();
     var s = state.session;
+    // Süreler ilk gönder tıklamasında dondurulur; yeniden denemelerde (sayfa yenilense bile) aynı değerler gider.
+    if (!state.timer.frozen) {
+      state.timer.frozen = timerRead(state.timer, Date.now());
+      saveTimer();
+    }
     var payload = {
       userId: s.userId,
       loginId: s.loginId,
       sessionNumber: s.sessionNumber,
       caseId: c.case_id,
-      caseStartTime: state.startTime.toISOString(),
-      responseTimeSeconds: Math.round((Date.now() - state.startTime.getTime()) / 100) / 10,
+      caseVersion: c.case_version,
+      caseStartTime: new Date(state.timer.startMs).toISOString(),
+      responseTimeSeconds: state.timer.frozen.responseTimeSeconds,
+      hiddenTimeSeconds: state.timer.frozen.hiddenTimeSeconds,
       deviceType: deviceType(),
       honorAccepted: s.honorAccepted === true
     };
@@ -859,6 +955,8 @@
 
   function onSaved(order, sessionComplete) {
     state.submitted = true;
+    storageRemove(state.timerKey);
+    state.timer = null;
     lockInputs(true);
     $('actionCard').hidden = true;
     var box = $('savedCard');
@@ -883,7 +981,29 @@
 
   function reloadControlHtml() {
     if (BOOT.appUrl) return '<a class="btn primary" href="' + escAttr(BOOT.appUrl) + '" target="_top">Sayfayı yenile</a>';
+    // Adres alınamadıysa iframe içinde sayfa yenileme yerine (uygulama içi tarayıcılarda güvenilmez) giriş ekranına dönülür.
     return '<button type="button" class="btn primary" data-action="reload">Sayfayı yenile</button>';
+  }
+
+  /** Tarayıcıyı yenilemeden istemci durumunu sıfırlar ve giriş ekranına döner (kod alanı dolu kalır). */
+  function resetToLogin() {
+    state.session = null;
+    state.summary = null;
+    state.queue = [];
+    state.idx = 0;
+    state.answers = {};
+    state.timer = null;
+    state.timerKey = '';
+    state.submitting = false;
+    state.submitted = false;
+    lockInputs(false);
+    $('blockingCard').hidden = true;
+    $('blockingCard').innerHTML = '';
+    $('summaryError').hidden = true;
+    $('summaryContent').innerHTML = '';
+    $('btnStart').disabled = false;
+    loginError('');
+    renderLogin();
   }
 
   function showBlocking(message) {

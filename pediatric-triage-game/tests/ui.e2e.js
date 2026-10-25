@@ -10,7 +10,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
-const { loadCode } = require('./harness');
+const { loadCode, activateAllCases, addParticipants, TEST_PARTICIPANTS } = require('./harness');
 
 let chromium;
 try {
@@ -49,6 +49,8 @@ const MOCK_RUN = `<script>
 function makeServer(session, config) {
   const server = { g: loadCode({ session, config }), calls: [], failNext: {}, failAfterServer: {} };
   server.g.ctx.initializeDatabase();
+  activateAllCases(server.g.env);   // yer tutucular pasif yüklenir
+  addParticipants(server.g.env, TEST_PARTICIPANTS.concat(['P-SC', 'P-SF', 'P-XSS', 'P-TMR', 'P-VER', 'P-CURVE', 'P-GAP', 'P-NC', 'P-NB']));
   server.redeploy = (s) => { server.g = loadCode({ session: s, config, env: server.g.env }); };
   /** Kullanıcının satırlarında özetin ilk görüntülenme anını "dakika önce"ye çeker. */
   server.setViewedAgo = (name, uid, minutes) => {
@@ -214,6 +216,9 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
   server.failNext.submitCase = 'Ağ bağlantısı koptu';
   await submit(page);
   assert.equal(await text(page, '#caseError'), 'Bağlantı hatası: Ağ bağlantısı koptu — lütfen tekrar deneyin.');
+  const frozen = await page.evaluate(() => window.state.timer.frozen);
+  assert.ok(frozen && frozen.responseTimeSeconds >= 0, 'süreler ilk tıklamada donduruldu');
+  await page.waitForTimeout(1200);   // yeniden deneme beklemesi süreye eklenmemeli
   assert.ok(await page.locator('#btnSubmit').isEnabled(), 'düğme yeniden etkin');
   assert.equal(await page.locator('#screen-case input[type=radio]:checked').count(), 10, 'yanıtlar korunur');
   assert.equal(server.rows('Session1').length, 1);
@@ -222,6 +227,8 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
   await submit(page);
   assert.match(await text(page, '#caseError'), /^Bağlantı hatası: Zaman aşımı/);
   assert.equal(server.rows('Session1').length, 2, 'ilk deneme sunucuya ulaştı');
+  assert.equal(server.rows('Session1')[1].response_time_seconds, frozen.responseTimeSeconds, 'yeniden denemede aynı süre');
+  assert.equal(server.rows('Session1')[1].case_version, 1);
   await submit(page);   // → E_DUPLICATE → başarı yolu
   assert.equal(await text(page, '#savedCard .saved-title'), '✓ Vaka 2 / 3 kaydedildi.');
   assert.equal(server.rows('Session1').length, 2, 'ikinci satır yazılmadı');
@@ -278,9 +285,13 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
   assert.deepEqual(curveRows[0].split('\t'), ['Triyaj kategorisi', '1/3', '—', '—', '—', '—']);
   assert.deepEqual(curveRows[4].split('\t').slice(0, 2), ['Ortalama güven', '★ 2,0']);
   assert.equal(await page2.locator('.curve-table thead .is-current').innerText(), 'O1');
-  // Başarımlar: yalnızca bu oturum (PDÜ 9/9 → Tam Üçgen); Kırmızı vaka Yeşil'e atandı → Kırmızı Nöbetçi yok
-  assert.equal(await text(page2, '#badgesCard h2'), 'Bu Oturumun Başarımları · 1/4');
-  assert.deepEqual(await page2.$$eval('#badgesCard .badge.earned', (els) => els.map((e) => e.dataset.badge)), ['FULL_TRIANGLE']);
+  // Başarımlar: yalnızca bu oturum. PDÜ 9/9 → Tam Üçgen; 1. vaka PDÜ, vital ve triyajda tam → Kusursuz Vaka
+  assert.equal(await text(page2, '#badgesCard h2'), 'Bu Oturumun Başarımları · 2/4');
+  assert.deepEqual(await page2.$$eval('#badgesCard .badge', (els) => els.map((e) => e.dataset.badge)),
+    ['FULL_TRIANGLE', 'VITAL_MASTER', 'BULLSEYE', 'PERFECT_CASE']);
+  assert.deepEqual(await page2.$$eval('#badgesCard .badge.earned', (els) => els.map((e) => e.dataset.badge)), ['FULL_TRIANGLE', 'PERFECT_CASE']);
+  assert.match(await text(page2, '#badgesCard [data-badge="PERFECT_CASE"]'), /Kusursuz Vaka[\s\S]*En az bir vakada PDÜ, vital bulgular ve triyaj kategorisinin tamamını doğru yapmak[\s\S]*Kazanıldı/);
+  assert.doesNotMatch(await text(page2, '#badgesCard'), /Kırmızı Nöbetçi|Renk Gözü/);
   assert.doesNotMatch(await text(page2, '#badgesCard'), /Daha önce|YENİ/);
   const order = await page2.$$eval('#summaryContent > .card', (els) => els.map((e) => e.id || e.className));
   assert.deepEqual(order.slice(-3), ['learningCard', 'badgesCard', 'card'], 'özet → vakalar → Gelişimim → Başarımlar → kapanış');
@@ -557,4 +568,80 @@ test('T48 — bayraklar kapalıyken ilgili arayüz parçaları gizlenir', async 
   assert.equal(await p2.locator('.confidence-line').count(), 3);
   assert.deepEqual([...p1.errors, ...p2.errors], []);
   await p2.close();
+});
+
+test('G1.1 — listede olmayan kodla giriş reddedilir', async () => {
+  const server = makeServer(1);
+  const page = await openPage(server);
+  await login(page, 'P-9999');
+  assert.ok(await visible(page, '#screen-login'));
+  assert.equal(await text(page, '#loginError'), 'Katılımcı kodu tanınmadı. Lütfen araştırmacının size ilettiği kodu kontrol edin.');
+  assert.equal(server.rows('Session1').length, 0);
+  await page.close();
+});
+
+test('G1.6 — sayfa yenilense de vaka süresi baştan başlamaz; gizli kalınan süre ayrıca kaydedilir', async () => {
+  const server = makeServer(1);
+  const page = await openPage(server);
+  await login(page, 'P-TMR');
+  const t0 = await page.evaluate(() => window.state.timer);
+  assert.equal(t0.hiddenMs, 0);
+  const setVisibility = (state) => page.evaluate((v) => {
+    Object.defineProperty(document, 'visibilityState', { value: v, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, state);
+  await setVisibility('hidden');                    // başka sekmeye geçildi
+  await page.waitForTimeout(1200);
+  await setVisibility('visible');
+  const afterHide = await page.evaluate(() => window.state.timer);
+  assert.ok(afterHide.hiddenMs >= 1100, 'gizli süre birikti: ' + afterHide.hiddenMs);
+  await answerCase(page, 'NNNANNNN', 'YESIL');
+  await page.reload();                              // yanıt vermeden sayfa yenilendi
+  await waitIdle(page);
+  await login(page, 'P-TMR');
+  const t1 = await page.evaluate(() => window.state.timer);
+  assert.equal(t1.startMs, t0.startMs, 'başlangıç korunur');
+  assert.ok(t1.hiddenMs >= afterHide.hiddenMs, 'yenileme boşluğu gizli süreye eklenir');
+  await page.waitForTimeout(300);
+  await answerCase(page, 'NNNANNNN', 'YESIL');
+  await submit(page);
+  const row = server.rows('Session1')[0];
+  assert.equal(row.case_start_time, new Date(t0.startMs).toISOString());
+  assert.ok(row.hidden_time_seconds >= 1.1, 'hidden_time_seconds ' + row.hidden_time_seconds);
+  assert.ok(row.response_time_seconds > row.hidden_time_seconds, 'etkin süre pozitif');
+  assert.equal(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.indexOf('pt:') === 0).length), 0,
+    'kayıttan sonra zamanlayıcı silinir');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('G1.2 + G2.5 — vaka güncellenirse engelleyici mesaj; adres yoksa "Sayfayı yenile" giriş ekranına döner', async () => {
+  const server = makeServer(1);
+  server.g.env.appUrl = '';
+  const page = await openPage(server);
+  await login(page, 'P-VER');
+  await answerCase(page, 'NNNANNNN', 'YESIL');
+  const cs = server.g.env.ss.getSheetByName('CaseDetails');
+  const H = JSON.parse(JSON.stringify(server.g.get('CASE_HEADERS')));
+  cs.getRange(2, H.indexOf('case_version') + 1).setValue(2);   // araştırmacı CASE-001'i güncelledi
+  await submit(page);
+  assert.equal(await text(page, '#blockingCard .error-msg'),
+    'Bu vaka siz yanıtlarken güncellendi. Lütfen sayfayı yenileyip vakayı yeniden yanıtlayın.');
+  assert.equal(server.rows('Session1').length, 0);
+  const btn = page.locator('#blockingCard button[data-action="reload"]');
+  assert.equal(await btn.innerText(), 'Sayfayı yenile');
+  await btn.click();
+  assert.ok(await visible(page, '#screen-login'));
+  assert.equal(await page.inputValue('#uid'), 'P-VER', 'kod alanı dolu kalır');
+  assert.equal(await visible(page, '#blockingCard'), false);
+  await page.click('#btnStart');
+  await waitIdle(page);
+  assert.equal(await text(page, '#headerMeta'), 'Katılımcı P-VER · Oturum 1/5 · Vaka 1/3');
+  assert.equal(await page.evaluate(() => window.state.timer.frozen), null, 'yeni sürüm yeni zamanlayıcıyla başlar');
+  await answerCase(page, 'NNNANNNN', 'YESIL');
+  await submit(page);
+  assert.equal(await text(page, '#savedCard .saved-title'), '✓ Vaka 1 / 3 kaydedildi.');
+  assert.equal(server.rows('Session1')[0].case_version, 2);
+  assert.deepEqual(page.errors, []);
+  await page.close();
 });

@@ -162,8 +162,10 @@ class FakeSpreadsheet {
 function makeEnv() {
   const env = {
     logs: [], consoleErrors: [], flushes: 0, writes: 0,
-    lockAvailable: true, lockHeld: false, lockErrors: [],
-    appUrl: 'https://script.google.com/macros/s/TEST/exec'
+    lockAvailable: true, lockHeld: false, lockErrors: [], lockAttempts: 0,
+    appUrl: 'https://script.google.com/macros/s/TEST/exec',
+    // Session: düzenleyicide etkin = asıl kullanıcı (sahip); anonim web ziyaretçisinde etkin e-posta boş.
+    activeEmail: 'owner@example.com', effectiveEmail: 'owner@example.com'
   };
   env.ss = new FakeSpreadsheet(env);
   return env;
@@ -179,9 +181,9 @@ function loadCode(o = {}) {
   const env = o.env || makeEnv();
   let src = fs.readFileSync(CODE_PATH, 'utf8');
   if (o.session !== undefined) {
-    const before = src;
-    src = src.replace(/^const CURRENT_SESSION = [^;]+;/m, 'const CURRENT_SESSION = ' + String(o.session) + ';');
-    if (src === before && String(o.session) !== '1') throw new Error('CURRENT_SESSION satırı bulunamadı');
+    const re = /^const CURRENT_SESSION = [^;]+;/m;
+    if (!re.test(src)) throw new Error('CURRENT_SESSION satırı bulunamadı');
+    src = src.replace(re, 'const CURRENT_SESSION = ' + String(o.session) + ';');
   }
   Object.entries(o.config || {}).forEach(([k, v]) => {
     // Değer; virgül, satır sonu veya satır sonu yorumu (//) ile biter.
@@ -207,6 +209,7 @@ function loadCode(o = {}) {
     LockService: {
       getScriptLock: () => ({
         tryLock: () => {
+          env.lockAttempts++;
           if (!env.lockAvailable) return false;
           if (env.lockHeld) env.lockErrors.push('tryLock while held');
           env.lockHeld = true;
@@ -219,6 +222,10 @@ function loadCode(o = {}) {
       })
     },
     Utilities: { getUuid: () => crypto.randomUUID() },
+    Session: {
+      getActiveUser: () => ({ getEmail: () => env.activeEmail }),
+      getEffectiveUser: () => ({ getEmail: () => env.effectiveEmail })
+    },
     Logger: { log: (m) => { env.logs.push(String(m)); } },
     console: {
       log: (...a) => env.logs.push(a.join(' ')),
@@ -266,4 +273,35 @@ function loadCode(o = {}) {
   };
 }
 
-module.exports = { loadCode, makeEnv, FakeSheet, ROOT };
+/** Test kurulumu: CaseDetails'teki tüm vakaları aktif yapar (yer tutucular v2.3'ten beri pasif yüklenir). */
+function activateAllCases(env) {
+  const s = env.ss.getSheetByName('CaseDetails');
+  const col = s._data[0].indexOf('active_status');
+  for (let r = 1; r < s.getLastRow(); r++) s._data[r][col] = 1;
+}
+
+/** Participants sayfasına kod ekler (sayfa yoksa oluşturur); kodlar düz metin hücreye yazılır. */
+function addParticipants(env, ids, status = 1) {
+  let s = env.ss.getSheetByName('Participants');
+  if (!s) {
+    s = env.ss.insertSheet('Participants');
+    s.getRange(1, 1, 1, 2).setValues([['user_id', 'active_status']]);
+  }
+  const start = s.getLastRow() + 1;
+  const need = start + ids.length - 1;
+  if (need > s.getMaxRows()) s.insertRowsAfter(s.getMaxRows(), need - s.getMaxRows());
+  ids.forEach((id, i) => { s._formats[start - 1 + i][0] = '@'; });
+  s.getRange(start, 1, ids.length, 2).setValues(ids.map((id) => [id, status]));
+  return s;
+}
+
+/** Testlerde kullanılan kodlar: P-0…P-99, P-000…P-999, 000…099, TEST-1…TEST-9 ve birkaç adlandırılmış kod. */
+const TEST_PARTICIPANTS = [].concat(
+  Array.from({ length: 100 }, (_, i) => 'P-' + i),
+  Array.from({ length: 1000 }, (_, i) => 'P-' + String(i).padStart(3, '0')),
+  Array.from({ length: 100 }, (_, i) => String(i).padStart(3, '0')),
+  Array.from({ length: 9 }, (_, i) => 'TEST-' + (i + 1)),
+  ['P-A', 'P-B', 'P-H', 'P-L', 'P-X', 'P-ONE', 'P-SKIP', 'P-HALF', 'P-OTHER']
+);
+
+module.exports = { loadCode, makeEnv, FakeSheet, ROOT, activateAllCases, addParticipants, TEST_PARTICIPANTS };

@@ -105,13 +105,14 @@ test('T27 — buildRecord_: case_global_order ve sütun kümesi', () => {
   const answers = Object.assign(correctAnswers(c), { user_triage_confidence: 2 });
   const rec = j(C.buildRecord_({
     n: 3, uid: 'P-014', loginId: 'L-12345678', caseStartTime: '2026-12-03T09:14:05.120Z',
-    payload: { responseTimeSeconds: 131.46, deviceType: 'mobile', honorAccepted: true },
+    payload: { responseTimeSeconds: 131.46, hiddenTimeSeconds: 12.34, deviceType: 'mobile', honorAccepted: true },
     answers, theCase: c, score: C.scoreResponse_(c, answers),
     now: new Date('2026-12-03T09:16:16.000Z'), responseId: 'R-x'
   }));
   assert.equal(rec.case_global_order, 8);
   assert.deepEqual(Object.keys(rec).sort(), RESPONSE_HEADERS.slice().sort());
   assert.equal(rec.response_time_seconds, 131.5);
+  assert.equal(rec.hidden_time_seconds, 12.3);
   assert.equal(rec.reference_triage_level, 'SARI');
   assert.equal(rec.feedback_viewed, 0);
   assert.equal(rec.feedback_viewed_time, '');
@@ -141,17 +142,23 @@ test('güven düzeyi puanlamaya girmez: 1 ile 3 arasında yalnızca güven sütu
   assert.deepEqual(a, b);
 });
 
-test('yanıt süresi ve cihaz normalleştirme', () => {
-  assert.equal(C.normalizeResponseTime_(42.04), 42);
-  assert.equal(C.normalizeResponseTime_('12.36'), 12.4);
-  assert.equal(C.normalizeResponseTime_(-3), 0);
-  assert.equal(C.normalizeResponseTime_('abc'), '');
-  assert.equal(C.normalizeResponseTime_(undefined), '');
-  assert.equal(C.normalizeResponseTime_(true), '');
+test('süre normalleştirme: geçersiz değer 0 değil eksik veri (\'\') olur', () => {
+  assert.equal(C.normalizeSeconds_(42.04), 42);
+  assert.equal(C.normalizeSeconds_('12.36'), 12.4);
+  assert.equal(C.normalizeSeconds_(0), 0);
+  assert.equal(C.normalizeSeconds_(-3), '');
+  assert.equal(C.normalizeSeconds_('-0.5'), '');
+  assert.equal(C.normalizeSeconds_('abc'), '');
+  assert.equal(C.normalizeSeconds_(undefined), '');
+  assert.equal(C.normalizeSeconds_(true), '');
 });
 
 test('sütun yapıları', () => {
-  assert.equal(RESPONSE_HEADERS.length, 46);
+  assert.equal(RESPONSE_HEADERS.length, 47);
+  assert.equal(RESPONSE_HEADERS.indexOf('hidden_time_seconds'), RESPONSE_HEADERS.indexOf('response_time_seconds') + 1);
+  assert.equal(RESPONSE_HEADERS.indexOf('feedback_viewed_time'), RESPONSE_HEADERS.indexOf('feedback_viewed') + 1,
+    'markFeedbackViewed_ iki bitişik hücreyi tek setValues ile yazar');
+  assert.deepEqual(j(g.get('PARTICIPANT_HEADERS')), ['user_id', 'active_status']);
   assert.equal(new Set(RESPONSE_HEADERS).size, RESPONSE_HEADERS.length);
   assert.ok(!RESPONSE_HEADERS.some((h) => /area/.test(h)), 'renk alanı sütunu kalmamalı');
   assert.equal(RESPONSE_HEADERS.indexOf('user_triage_confidence'), RESPONSE_HEADERS.indexOf('dangerous_under_triage') + 1);
@@ -240,6 +247,11 @@ test('validateCase_ — engelleyici hatalar', () => {
   assert.match(errs({ heart_rate_value: '145/dk' }).join(), /heart_rate_value sayı/);
   assert.match(errs({ case_version: 0 }).join(), /case_version/);
   assert.deepEqual(errs({ session: '2', session_order: '1', spo2_reference: '0', age: '3' }), []);
+  // Değerlendirilecek her PDÜ bileşeni için metin veya geçerli medya zorunlu
+  const ev = /pat_appearance_text boş ve geçerli pat_appearance_media_url yok/;
+  assert.match(errs({ pat_appearance_text: '', pat_appearance_media_url: '' }).join(), ev);
+  assert.match(errs({ pat_appearance_text: ' ', pat_appearance_media_url: 'javascript:alert(1)' }).join(), ev);
+  assert.deepEqual(errs({ pat_appearance_text: '', pat_appearance_media_url: 'https://example.org/gorunum.jpg' }), []);
 });
 
 test('caseWarnings_ — engellemeyen uyarılar', () => {
@@ -250,7 +262,7 @@ test('caseWarnings_ — engellemeyen uyarılar', () => {
   }))).join(' | ');
   assert.match(w, /triage_feedback boş/);
   assert.match(w, /clinical_category izinli listede değil/);
-  assert.match(w, /pat_appearance_text ve pat_appearance_media_url ikisi de boş/);
+  assert.doesNotMatch(w, /pat_appearance_text/, 'kanıtsız bileşen artık engelleyici hata (validateCase_)');
   assert.match(w, /pat_work_of_breathing_media_url geçerli bir http\(s\) bağlantısı değil/);
   assert.match(w, /case_title boş/);
 });
@@ -301,18 +313,60 @@ test('summarizeRows_ — ortak oturum özetleyici (§18.2.1)', () => {
   assert.deepEqual(t, {
     casesDone: 3, triageExact: 2, pat: 6, vital: 12, dangerousUnderTriage: 1, totalTimeSeconds: 90.3,
     confidenceCounts: { 1: 1, 2: 0, 3: 2 }, confidenceMean: 2.3,
-    redAreaCorrect: false, greenAreaCorrect: true
+    perfectCases: 1
   });
-  // Kırmızı/Yeşil vaka yoksa null; güven yoksa ortalama null
+  // Güven yoksa ortalama null
   const none = j(C.summarizeRows_([row('SARI', 'SARI', { user_triage_confidence: '' })]));
-  assert.equal(none.redAreaCorrect, null);
-  assert.equal(none.greenAreaCorrect, null);
   assert.equal(none.confidenceMean, null);
   assert.deepEqual(none.confidenceCounts, { 1: 0, 2: 0, 3: 0 });
-  // Her vakaya KIRMIZI: kırmızı doğru, yeşil yanlış
-  const allRed = j(C.summarizeRows_([row('KIRMIZI', 'KIRMIZI'), row('YESIL', 'KIRMIZI'), row('SARI', 'KIRMIZI')]));
-  assert.equal(allRed.redAreaCorrect, true);
-  assert.equal(allRed.greenAreaCorrect, false);
+  // Kusursuz vaka: PDÜ 3/3 + vital 5/5 + triyaj birebir; biri eksikse sayılmaz
+  const perfect = (rows) => C.summarizeRows_(rows).perfectCases;
+  assert.equal(perfect([row('SARI', 'SARI'), row('YESIL', 'YESIL'), row('KIRMIZI', 'KIRMIZI')]), 3);
+  assert.equal(perfect([row('SARI', 'SARI', { vital_sign_total_score: 4 })]), 0);
+  assert.equal(perfect([row('SARI', 'SARI', { pat_total_score: 2 })]), 0);
+  assert.equal(perfect([row('KIRMIZI', 'SARI')]), 0);
+  assert.equal(perfect([row('SARI', 'SARI', { pat_total_score: '3', vital_sign_total_score: '5', triage_exact_match: '1' })]), 1);
+  assert.equal(perfect([]), 0);
+  assert.ok(!('redAreaCorrect' in t) && !('greenAreaCorrect' in t), 'yalnızca Kırmızı Nöbetçi için tutulan toplamlar kaldırıldı');
+});
+
+test('katılımcı izin listesi — eşleştirme anahtarı, kanonik kod, denetim', () => {
+  const list = [
+    { user_id: 'P-014', active_status: 1 }, { user_id: 'P-015', active_status: 0 },
+    { user_id: '  p-020 ', active_status: '1' }, { user_id: '-016', active_status: 1 }, { user_id: 'P-021', active_status: '' }
+  ];
+  assert.equal(C.participantKey_(' p-0 14 '), 'P014');
+  assert.equal(C.participantKey_('Ş-01'), 'Ş01');
+  assert.equal(C.findParticipant_(list, 'P014'), 'P-014');
+  assert.equal(C.findParticipant_(list, 'P-014'), 'P-014');
+  assert.equal(C.findParticipant_(list, 'P-020'), 'P-020', 'listedeki değer normalleştirilerek döner');
+  assert.equal(C.findParticipant_(list, 'P-015'), null, 'pasif');
+  assert.equal(C.findParticipant_(list, 'P-021'), null, 'active_status boş = pasif');
+  assert.equal(C.findParticipant_(list, '016'), null, 'listedeki geçersiz kod eşleşmez');
+  assert.equal(C.findParticipant_(list, 'P-14'), null, 'baştaki sıfır farklı koddur');
+  assert.equal(C.findParticipant_(list, ''), null);
+  const a = j(C.participantAudit_(list.concat([{ user_id: 'p014', active_status: 1 }]).map((row, i) => ({ row, rowNumber: i + 2 }))));
+  assert.deepEqual([a.active, a.inactive], [3, 2]);
+  const text = a.lines.join('\n');
+  assert.match(text, /HATA satır 5: geçersiz kod \("-016"\)/);
+  assert.match(text, /UYARI P-021 \(satır 6\): active_status 0 veya 1 değil → pasif sayılır/);
+  assert.match(text, /HATA aynı kabul edilen kodlar: P-014 \(satır 2\), P014 \(satır 7\)/);
+});
+
+test('yer tutucu tespiti ve oturum kapatma durumu', () => {
+  assert.deepEqual(j(C.placeholderIds_([byId['CASE-001'], Object.assign({}, byId['CASE-002'], { case_description: 'Gözden geçirildi.' })])), ['CASE-001']);
+  const now = new Date('2026-12-03T10:00:00.000Z');
+  const r = (uid, caseId, extra) => Object.assign({ user_id: uid, case_id: caseId, case_submission_time: '2026-12-03T09:20:00.000Z',
+    feedback_viewed: 0, feedback_viewed_time: '' }, extra);
+  const viewed = (min) => ({ feedback_viewed: 1, feedback_viewed_time: new Date(now.getTime() - min * 60000).toISOString() });
+  const a = j(C.sessionActivity_([
+    r('P-1', 'C1'), r('P-1', 'C2'),                                                   // vakası eksik
+    r('P-2', 'C1', viewed(10)), r('P-2', 'C2', viewed(10)), r('p-2 ', 'C3', viewed(10)), // pencere açık (normalleştirilmiş kod)
+    r('P-3', 'C1', viewed(40)), r('P-3', 'C2', viewed(40)), r('P-3', 'C3', viewed(40)), // pencere kapandı
+    r('P-4', 'C1'), r('P-4', 'C2'), r('P-4', 'C3', { case_submission_time: '2026-12-03T09:48:30.000Z' }) // özet hiç verilmedi
+  ], now));
+  assert.deepEqual(a, { participants: 4, inProgress: 1, windowOpen: 1, neverViewed: 1, minutesSinceLastSubmission: 11 });
+  assert.equal(C.sessionActivity_([], now).minutesSinceLastSubmission, null);
 });
 
 test('parseConfidence_ — yalnızca 1/2/3', () => {

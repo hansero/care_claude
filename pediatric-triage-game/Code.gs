@@ -8,16 +8,20 @@
  *    Kaydet → Dağıt > Dağıtımları yönet > (mevcut web uygulaması) ✏ Düzenle
  *    → Sürüm: "Yeni sürüm" → Dağıt.   URL DEĞİŞMEZ.
  *    ("Yeni dağıtım" OLUŞTURMAYIN — yeni URL üretir.)
+ *
+ *  DİKKAT: Kodun yeni bir sürümünü yapıştırdığınızda bu değer 0'a döner.
+ *  Çalışma sürerken kodu güncellediyseniz değeri yürüyen oturuma göre yeniden ayarlayın.
  * ========================================================================== */
-const CURRENT_SESSION = 1;
+const CURRENT_SESSION = 0;
 
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.3.0';
 
 const CONFIG = {
   STUDY_ID: 'PEDTRI-LC-01',
   TOTAL_SESSIONS: 5,
   CASES_PER_SESSION: 3,
   CASE_SHEET: 'CaseDetails',
+  PARTICIPANT_SHEET: 'Participants',   // izin verilen katılımcı kodları
   SESSION_SHEET_PREFIX: 'Session',     // → Session1 … Session5
   REQUIRE_HONOR_STATEMENT: true,       // giriş ekranında onur beyanı kutusu zorunlu mu
   SHOW_TRIAGE_HINTS: true,             // triyaj kartlarının altında kısa tanım gösterilsin mi
@@ -35,15 +39,17 @@ const CONFIG = {
 
 /**
  * ============================================================================
- *  Pediatrik Triyaj Ciddi Oyunu v2.2 — sunucu (Google Apps Script, V8)
+ *  Pediatrik Triyaj Ciddi Oyunu v2.3 — sunucu (Google Apps Script, V8)
  *
  *  Genel API (istemci) : doGet, startSession, submitCase, getSessionSummary
  *  Araştırmacı         : initializeDatabase, auditCaseDataset, previewSession
- *                        (Apps Script düzenleyicisinden çalıştırılır; raporlar
- *                         yalnızca Yürütme günlüğüne yazılır)
+ *                        (yalnızca betik sahibi, Apps Script düzenleyicisinden;
+ *                         raporlar yalnızca Yürütme günlüğüne yazılır)
  *
  *  v2.1: güven düzeyi (puanlanmaz), Gelişimim (öğrenme eğrisi), oturum rozetleri
  *  v2.2: tamamlanan oturuma bir sonraki oturuma kadar yeniden giriş yok
+ *  v2.3: katılımcı izin listesi, vaka sürümü denetimi, gizli kalınan süre,
+ *        yalnızca sahibin çalıştırabildiği araştırmacı fonksiyonları
  *
  *  Yetki yalnızca bu betiğin bağlı olduğu e-tabloyla sınırlıdır:
  *  @OnlyCurrentDoc
@@ -100,6 +106,7 @@ const RESPONSE_HEADERS = [
   'case_id', 'case_version', 'session_order', 'case_global_order',
   // Zamanlama
   'case_start_time', 'case_submission_time', 'response_time_seconds',
+  'hidden_time_seconds',   // v2.3 — response_time_seconds'ın sayfa gizli/kapalıyken geçen kısmı
   // Kullanıcı yanıtları
   'user_pat_appearance', 'user_pat_work_of_breathing', 'user_pat_circulation_to_skin',
   'user_temperature_classification', 'user_heart_rate_classification',
@@ -123,6 +130,9 @@ const RESPONSE_HEADERS = [
   // Süreç
   'honor_statement_accepted', 'feedback_viewed', 'feedback_viewed_time', 'device_type'
 ];
+
+/** Participants: okuma başlık adına göre yapılır; "not" gibi ek sütunlar serbesttir. */
+const PARTICIPANT_HEADERS = ['user_id', 'active_status'];
 
 /** Session sayfalarında düz metin ('@') biçimlenen sütunlar (014 → 14, ISO → tarih dönüşümünü önler). */
 const TEXT_FORMAT_COLUMNS = [
@@ -186,6 +196,7 @@ const MSG = {
   E_USER_ID_REQUIRED: 'Lütfen katılımcı kodunuzu girin.',
   E_USER_ID_TOO_LONG: 'Katılımcı kodu en fazla {max} karakter olabilir.',
   E_USER_ID_INVALID: 'Katılımcı kodu =, +, - veya @ karakteriyle başlayamaz.',
+  E_PARTICIPANT_UNKNOWN: 'Katılımcı kodu tanınmadı. Lütfen araştırmacının size ilettiği kodu kontrol edin.',
   E_HONOR_REQUIRED: 'Başlamadan önce onur beyanını onaylamanız gerekmektedir.',
   E_SESSION_NOT_READY: 'Oturum {n} için vaka bankası hazır değil (beklenen {k}, bulunan {m}). Lütfen araştırmacıyla iletişime geçin.',
   E_SHEET_MISSING: '"Session{n}" sayfası bulunamadı. Araştırmacının initializeDatabase() fonksiyonunu çalıştırması gerekir.',
@@ -197,6 +208,7 @@ const MSG = {
   E_INVALID_TRIAGE: 'Geçersiz triyaj kategorisi.',
   E_INVALID_CONFIDENCE: 'Geçersiz güven düzeyi: 1, 2 veya 3 olmalıdır.',
   E_CASE_NOT_IN_SESSION: 'Bu vaka mevcut oturuma ait değil.',
+  E_CASE_VERSION_CHANGED: 'Bu vaka siz yanıtlarken güncellendi. Lütfen sayfayı yenileyip vakayı yeniden yanıtlayın.',
   E_DUPLICATE: 'Bu vaka daha önce gönderilmiş olup değiştirilemez.',
   E_OUT_OF_ORDER: 'Vakalar sırayla yanıtlanmalıdır. Lütfen sayfayı yenileyin.',
   E_BUSY: 'Sunucu şu anda yoğun. Lütfen birkaç saniye sonra tekrar deneyin.',
@@ -261,7 +273,7 @@ function startSession(userId, honorAccepted) {
     const n = getActiveSession_();
     if (n === 0) return { status: 'closed', message: MSG.E_CLOSED, totalSessions: CONFIG.TOTAL_SESSIONS };
 
-    const uid = requireUserId_(userId);
+    const uid = requireParticipant_(userId);
     if (CONFIG.REQUIRE_HONOR_STATEMENT && honorAccepted !== true) return err_('E_HONOR_REQUIRED');
 
     const cases = getSessionCases_(n);
@@ -319,7 +331,7 @@ function submitCase(payload) {
     if (n === 0) return err_('E_CLOSED');
     if (Number(p.sessionNumber) !== n) return err_('E_SESSION_CHANGED');
 
-    const required = ['userId', 'loginId', 'sessionNumber', 'caseId', 'caseStartTime']
+    const required = ['userId', 'loginId', 'sessionNumber', 'caseId', 'caseVersion', 'caseStartTime']
       .concat(ANSWER_FIELDS, ['user_triage_level']);
     for (let i = 0; i < required.length; i++) {
       if (isBlank_(p[required[i]])) return err_('E_MISSING_FIELD', { field: required[i] });
@@ -341,7 +353,7 @@ function submitCase(payload) {
     if (!level) return err_('E_INVALID_TRIAGE');
     answers.user_triage_level = level.code;
 
-    const uid = requireUserId_(p.userId);
+    const uid = requireParticipant_(p.userId);
     if (CONFIG.REQUIRE_HONOR_STATEMENT && p.honorAccepted !== true) return err_('E_HONOR_REQUIRED');
 
     const loginId = String(p.loginId).trim();
@@ -357,6 +369,9 @@ function submitCase(payload) {
     const sheet = getSessionSheet_(n);
     const done = sessionProgress_(sheet, uid, cases).done;
     if (done.indexOf(String(theCase.case_id)) !== -1) return err_('E_DUPLICATE');
+    // Yinelemeden SONRA: ilk gönderimi ulaşmış bir ağ yeniden denemesi yine başarı sayılır.
+    // Katılımcının görmediği bir sürüme göre puanlama yapılmaz.
+    if (Number(p.caseVersion) !== Number(theCase.case_version)) return err_('E_CASE_VERSION_CHANGED');
 
     const order = Number(theCase.session_order);
     const earlierMissing = cases.some(function (c) {
@@ -391,13 +406,14 @@ function submitCase(payload) {
 
 /**
  * Oturumun tüm vakaları gönderilmişse ve özet penceresi açıksa toplu geri bildirimi
- * döndürür; feedback_viewed / feedback_viewed_time sütunlarını günceller.
+ * döndürür. İlk verilişte feedback_viewed / feedback_viewed_time yazılır; bu damga
+ * özet penceresinin başlangıcıdır (geri bildirimin okunduğunu kanıtlamaz).
  */
 function getSessionSummary(userId) {
   try {
     const n = getActiveSession_();
     if (n === 0) return err_('E_CLOSED');
-    const uid = requireUserId_(userId);
+    const uid = requireParticipant_(userId);
 
     const cases = getSessionCases_(n);
     assertSessionReady_(n, cases);
@@ -411,9 +427,13 @@ function getSessionSummary(userId) {
     if (progress.done.length < cases.length) return err_('E_SUMMARY_LOCKED');
     if (!isSummaryWindowOpen_(progress.rows, new Date())) return err_('E_SESSION_LOCKED', { n: n });
 
-    const caseFeedback = cases.map(function (c, i) { return buildCaseFeedback_(progress.rows[i], c); });
+    // Kilit yalnızca ilk verilişte alınır. Damga yazılamazsa geri bildirim verilmez:
+    // aksi halde pencere hiç başlamaz ve özet süresiz yeniden açılabilir.
+    if (progress.rows.some(function (r) { return Number(r.feedback_viewed) !== 1; })) {
+      if (!markFeedbackViewed_(sheet, uid, cases)) return err_('E_BUSY');
+    }
 
-    markFeedbackViewed_(sheet, uid, cases);
+    const caseFeedback = cases.map(function (c, i) { return buildCaseFeedback_(progress.rows[i], c); });
 
     const k = CONFIG.CASES_PER_SESSION;
     const result = {
@@ -437,14 +457,18 @@ function getSessionSummary(userId) {
 /* ============================================================================
  *  ARAŞTIRMACI FONKSİYONLARI — Apps Script düzenleyicisinden çalıştırın
  *
- *  Not: Bu fonksiyonlar da teknik olarak google.script.run ile çağrılabilir.
- *  Referans sızıntısını önlemek için raporlar YALNIZCA Logger'a yazılır ve
- *  çağırana hiçbir şey döndürülmez. Sonuçları "Yürütme günlüğü"nde görürsünüz.
+ *  Adlarında "_" yoktur, çünkü "_" ile biten fonksiyonlar düzenleyicinin Çalıştır
+ *  menüsünde görünmez. Web uygulamasından (google.script.run) çağrılmalarını
+ *  assertResearcher_() engeller. Raporlar YALNIZCA Yürütme günlüğüne yazılır.
  * ========================================================================== */
 
-/** Sayfaları oluşturur/doğrular, boş vaka bankasına 15 yer tutucu vakayı yükler. İdempotenttir. */
+/**
+ * Sayfaları oluşturur/doğrular. Boş vaka bankasına 15 yer tutucu vakayı PASİF olarak
+ * yükler; boş bir Participants sayfası oluşturur. İdempotenttir.
+ */
 function initializeDatabase() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  assertResearcher_();
+  const ss = getSpreadsheet_();
 
   let caseSheet = ss.getSheetByName(CONFIG.CASE_SHEET);
   if (!caseSheet || caseSheet.getLastRow() === 0) {
@@ -460,6 +484,12 @@ function initializeDatabase() {
     }
   }
 
+  let participantSheet = ss.getSheetByName(CONFIG.PARTICIPANT_SHEET);
+  if (!participantSheet || participantSheet.getLastRow() === 0) {
+    participantSheet = participantSheet || ss.insertSheet(CONFIG.PARTICIPANT_SHEET);
+    setupParticipantSheet_(participantSheet);
+  }
+
   for (let n = 1; n <= CONFIG.TOTAL_SESSIONS; n++) {
     let sheet = ss.getSheetByName(sessionSheetName_(n));
     if (!sheet || sheet.getLastRow() === 0) {
@@ -469,9 +499,9 @@ function initializeDatabase() {
       try {
         assertResponseHeaders_(sheet, n);
       } catch (e) {
-        Logger.log('İPUCU: ' + sessionSheetName_(n) + ' başlıkları bu sürümle uyuşmuyor (v2.1 ile "' +
-          CONFIDENCE_FIELD + '" sütunu eklendi). Sayfada yalnızca test verisi varsa sayfayı silip ' +
-          'initializeDatabase() fonksiyonunu yeniden çalıştırın.');
+        Logger.log('İPUCU: ' + sessionSheetName_(n) + ' başlıkları bu sürümle uyuşmuyor (v2.3 ile ' +
+          '"hidden_time_seconds" sütunu eklendi; ' + RESPONSE_HEADERS.length + ' sütun). Sayfada yalnızca ' +
+          'test verisi varsa sayfayı silip initializeDatabase() fonksiyonunu yeniden çalıştırın.');
         throw e;
       }
     }
@@ -482,14 +512,27 @@ function initializeDatabase() {
   auditCaseDataset();
 }
 
-/** Vaka bankası ve oturum hazırlık raporunu Yürütme günlüğüne yazar. */
+/** Vaka bankası, katılımcı listesi ve oturum hazırlık raporunu Yürütme günlüğüne yazar. */
 function auditCaseDataset() {
+  assertResearcher_();
   Logger.log(auditReport_());
 }
 
 /** n. oturumun vakalarını referanslarıyla günlüğe yazar (n boşsa CURRENT_SESSION). */
 function previewSession(n) {
+  assertResearcher_();
   Logger.log(previewReport_(n));
+}
+
+/**
+ * Yalnızca betik sahibi (düzenleyiciden çalıştıran kişi) geçer. "Kendim olarak çalıştır"
+ * web uygulamasında ziyaretçinin e-postası boş döner; düzenleyicide etkin kullanıcıyla aynıdır.
+ */
+function assertResearcher_() {
+  const active = Session.getActiveUser().getEmail();
+  if (!active || active !== Session.getEffectiveUser().getEmail()) {
+    throw new Error('Bu fonksiyon yalnızca betik sahibi tarafından Apps Script düzenleyicisinden çalıştırılabilir.');
+  }
 }
 
 
@@ -519,12 +562,22 @@ function webAppUrl_() {
   }
 }
 
+/** Betiğin bağlı olduğu e-tablo. Bağlı (bound) betikte web uygulamasından da çalışır. */
+function getSpreadsheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) {
+    Logger.log('HATA: Bağlı e-tabloya erişilemedi. Betik, e-tablodan (Uzantılar > Apps Script) açılmış olmalıdır.');
+    throw new Error('Bağlı e-tabloya erişilemedi.');
+  }
+  return ss;
+}
+
 function sessionSheetName_(n) {
   return CONFIG.SESSION_SHEET_PREFIX + n;
 }
 
 function getSessionSheet_(n) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sessionSheetName_(n));
+  const sheet = getSpreadsheet_().getSheetByName(sessionSheetName_(n));
   if (!sheet) fail_('E_SHEET_MISSING', { n: n });
   assertResponseHeaders_(sheet, n);
   return sheet;
@@ -549,9 +602,26 @@ function headerRow_(sheet) {
 
 /** active_status == 1, session == n ve geçerli vakalar; session_order'a göre sıralı. */
 function getSessionCases_(n) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.CASE_SHEET);
+  const sheet = getSpreadsheet_().getSheetByName(CONFIG.CASE_SHEET);
   if (!sheet) return [];
   return filterSessionCases_(readRows_(sheet), n);
+}
+
+/**
+ * Katılımcı kodunu Participants listesine göre doğrular ve listedeki kanonik kodu döndürür.
+ * Eşleştirmede büyük/küçük harf, boşluk ve noktalama yok sayılır (p014 → P-014).
+ * Bilinmeyen veya pasif kodda kodun hangi kısmının yanlış olduğu söylenmez.
+ */
+function requireParticipant_(raw) {
+  const uid = requireUserId_(raw);
+  const sheet = getSpreadsheet_().getSheetByName(CONFIG.PARTICIPANT_SHEET);
+  if (!sheet) {
+    Logger.log('HATA: "' + CONFIG.PARTICIPANT_SHEET + '" sayfası yok — initializeDatabase() çalıştırın ve kodları girin.');
+    fail_('E_PARTICIPANT_UNKNOWN');
+  }
+  const canonical = findParticipant_(readRows_(sheet), uid);
+  if (!canonical) fail_('E_PARTICIPANT_UNKNOWN');
+  return canonical;
 }
 
 function assertSessionReady_(n, cases) {
@@ -581,7 +651,7 @@ function sessionProgress_(sheet, uid, cases) {
  * case_id, başlık, referans veya metin döndürmez; eksik/bozuk sayfa 'none' sayılır.
  */
 function getUserHistory_(uid) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet_();
   const out = [];
   for (let s = 1; s <= CONFIG.TOTAL_SESSIONS; s++) {
     const sheet = ss.getSheetByName(sessionSheetName_(s));
@@ -654,13 +724,17 @@ function ensureSheetSize_(sheet, minRows, minCols) {
   }
 }
 
+/** Yer tutucu vakalar PASİF yüklenir: gözden geçirilen vakalar araştırmacı tarafından bilinçli olarak açılır. */
 function setupCaseSheet_(sheet) {
   const seeds = seedCases_();
   ensureSheetSize_(sheet, seeds.length + 1, CASE_HEADERS.length);
   sheet.getRange(1, 1, 1, CASE_HEADERS.length).setValues([CASE_HEADERS]).setFontWeight('bold');
   sheet.setFrozenRows(1);
   const rows = seeds.map(function (c) {
-    return CASE_HEADERS.map(function (h) { return c[h] !== undefined ? c[h] : ''; });
+    return CASE_HEADERS.map(function (h) {
+      if (h === 'active_status') return 0;
+      return c[h] !== undefined ? c[h] : '';
+    });
   });
   sheet.getRange(2, 1, rows.length, CASE_HEADERS.length).setValues(rows);
   applyCaseValidation_(sheet);
@@ -701,25 +775,39 @@ function setupSessionSheet_(sheet) {
   applyTextFormat_(sheet, 2, sheet.getMaxRows() - 1);
 }
 
-/** Özet ilk kez görüntülendiğinde feedback_viewed = 1 ve zaman damgası yazılır; sonrakilerde değişmez. */
+/** Boş katılımcı listesi: user_id düz metin (P-014 → 014 dönüşümü olmaz), active_status 0/1. */
+function setupParticipantSheet_(sheet) {
+  ensureSheetSize_(sheet, CONFIG.MIN_PREFORMATTED_ROWS, PARTICIPANT_HEADERS.length);
+  sheet.getRange(1, 1, 1, PARTICIPANT_HEADERS.length).setValues([PARTICIPANT_HEADERS]).setFontWeight('bold');
+  sheet.setFrozenRows(1);
+  const numRows = sheet.getMaxRows() - 1;
+  sheet.getRange(2, PARTICIPANT_HEADERS.indexOf('user_id') + 1, numRows, 1).setNumberFormat('@');
+  const rule = SpreadsheetApp.newDataValidation().requireValueInList(['0', '1'], true).setAllowInvalid(false).build();
+  sheet.getRange(2, PARTICIPANT_HEADERS.indexOf('active_status') + 1, numRows, 1).setDataValidation(rule);
+}
+
+/**
+ * Özet ilk kez verildiğinde feedback_viewed = 1 ve zaman damgası yazılır; sonrakilerde değişmez.
+ * Kilit alınamazsa false döner (çağıran yeniden denenebilir bir hata vermelidir).
+ */
 function markFeedbackViewed_(sheet, uid, cases) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(CONFIG.LOCK_TIMEOUT_MS)) {
-    Logger.log('UYARI: kilit alınamadı; ' + uid + ' için feedback_viewed güncellemesi atlandı.');
-    return;
+    Logger.log('UYARI: kilit alınamadı; ' + uid + ' için feedback_viewed yazılamadı (özet verilmedi).');
+    return false;
   }
   try {
+    // Kilit altında yeniden okunur: satır numaraları ve "zaten görüldü" bilgisi güncel olsun.
     const found = userRowsByCase_(readRowsWithIndex_(sheet), uid, cases);
-    const colViewed = RESPONSE_HEADERS.indexOf('feedback_viewed') + 1;
-    const colTime = RESPONSE_HEADERS.indexOf('feedback_viewed_time') + 1;
+    const colViewed = RESPONSE_HEADERS.indexOf('feedback_viewed') + 1;   // feedback_viewed_time hemen sağında
     const nowIso = new Date().toISOString();
     Object.keys(found.byCase).forEach(function (id) {
       const hit = found.byCase[id];
       if (Number(hit.row.feedback_viewed) === 1) return;
-      sheet.getRange(hit.rowNumber, colViewed).setValue(1);
-      sheet.getRange(hit.rowNumber, colTime).setValue(nowIso);
+      sheet.getRange(hit.rowNumber, colViewed, 1, 2).setValues([[1, nowIso]]);
     });
     SpreadsheetApp.flush();
+    return true;
   } finally {
     lock.releaseLock();
   }
@@ -731,7 +819,7 @@ function markFeedbackViewed_(sheet, uid, cases) {
  * ========================================================================== */
 
 function auditReport_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet_();
   const k = CONFIG.CASES_PER_SESSION;
   const lines = ['=== VAKA BANKASI DENETİMİ ==='];
 
@@ -772,6 +860,7 @@ function auditReport_() {
   lines.push('');
   const plain = rows.map(function (x) { return x.row; });
   const sessionStatus = {};
+  const sessionPlaceholders = {};
   for (let n = 1; n <= CONFIG.TOTAL_SESSIONS; n++) {
     const cases = filterSessionCases_(plain, n);
     const problems = sessionProblems_(cases);
@@ -781,10 +870,13 @@ function auditReport_() {
       ? 'K/S/Y ✓'
       : 'UYARI renk dağılımı K' + dist.KIRMIZI + '/S' + dist.SARI + '/Y' + dist.YESIL + ' (önerilen 1/1/1)';
     const sheetState = sessionSheetState_(ss, n);
+    const placeholders = placeholderIds_(cases);
     lines.push('Oturum ' + n + ': ' + cases.length + '/' + k + ' vaka · sıra {' + orders.join(',') + '} · ' +
       colors + ' · ' + sessionSheetName_(n) + ' ' + sheetState +
-      (problems.length ? ' → HAZIR DEĞİL: ' + problems.join('; ') : ''));
+      (problems.length ? ' → HAZIR DEĞİL: ' + problems.join('; ') : '') +
+      (placeholders.length ? ' · UYARI gözden geçirilmemiş yer tutucu: ' + placeholders.join(', ') : ''));
     sessionStatus[n] = problems.concat(sheetState === '✓' ? [] : [sessionSheetName_(n) + ' ' + sheetState]);
+    sessionPlaceholders[n] = placeholders;
   }
 
   // 3) Denge (aktif + geçerli vakalar)
@@ -802,7 +894,28 @@ function auditReport_() {
   });
   lines.push('Klinik kategori: ' + Object.keys(cats).map(function (cat) { return cat + ' ' + cats[cat]; }).join(' · '));
 
-  // 4) Oyun bileşenleri (çalışma boyunca sabit kalmalı) ve aktif oturum
+  // 4) Katılımcı listesi
+  lines.push('');
+  const participantSheet = ss.getSheetByName(CONFIG.PARTICIPANT_SHEET);
+  let participantIssue = '';
+  if (!participantSheet) {
+    participantIssue = '"' + CONFIG.PARTICIPANT_SHEET + '" sayfası yok';
+    lines.push('Katılımcılar: HATA ' + participantIssue + ' — initializeDatabase() çalıştırın.');
+  } else {
+    const pHeaders = headerRow_(participantSheet);
+    const missing = PARTICIPANT_HEADERS.filter(function (h) { return pHeaders.indexOf(h) === -1; });
+    if (missing.length) {
+      participantIssue = CONFIG.PARTICIPANT_SHEET + ' eksik sütun: ' + missing.join(', ');
+      lines.push('Katılımcılar: HATA ' + participantIssue);
+    } else {
+      const pa = participantAudit_(readRowsWithIndex_(participantSheet));
+      lines.push('Katılımcılar: aktif ' + pa.active + ' · pasif ' + pa.inactive);
+      pa.lines.forEach(function (l) { lines.push('  ' + l); });
+      if (!pa.active) participantIssue = 'aktif katılımcı yok';
+    }
+  }
+
+  // 5) Oyun bileşenleri (çalışma boyunca sabit kalmalı) ve aktif oturum
   lines.push('');
   const onOff = function (v) { return v ? 'AÇIK' : 'KAPALI'; };
   lines.push('Oyun bileşenleri: güven düzeyi ' + onOff(CONFIG.ENABLE_CONFIDENCE) +
@@ -816,9 +929,19 @@ function auditReport_() {
   } else if (active === 0) {
     lines.push('AKTİF OTURUM: CURRENT_SESSION = 0 → OYUN KAPALI');
   } else {
-    const reasons = sessionStatus[active];
+    const reasons = sessionStatus[active].concat(participantIssue ? [participantIssue] : []);
+    const placeholders = sessionPlaceholders[active];
     lines.push('AKTİF OTURUM: CURRENT_SESSION = ' + active + ' → ' +
-      (reasons.length ? 'HAZIR DEĞİL: ' + reasons.join('; ') : 'HAZIR'));
+      (reasons.length ? 'HAZIR DEĞİL: ' + reasons.join('; ') : 'HAZIR') +
+      (placeholders.length ? ' — UYARI: gözden geçirilmemiş yer tutucu vaka aktif (' + placeholders.join(', ') + ')' : ''));
+    if (sessionSheetState_(ss, active) === '✓') {
+      const a = sessionActivity_(readRows_(ss.getSheetByName(sessionSheetName_(active))), new Date());
+      lines.push('Oturum ' + active + ' durumu: ' + a.participants + ' katılımcı · vakası eksik ' + a.inProgress +
+        ' · özet penceresi açık ' + a.windowOpen + ' · özeti hiç açılmamış ' + a.neverViewed + ' · son gönderim ' +
+        (a.minutesSinceLastSubmission === null ? '—' : a.minutesSinceLastSubmission + ' dk önce'));
+      lines.push('  Oturumu kapatmadan önce "vakası eksik" ve "özet penceresi açık" 0 olmalı ya da son gönderimin ' +
+        'üzerinden en az ' + CONFIG.SUMMARY_REVIEW_WINDOW_MINUTES + ' dk geçmiş olmalı.');
+    }
   }
   return lines.join('\n');
 }
@@ -866,14 +989,101 @@ function normalizeUserId_(raw) {
   return String(raw == null ? '' : raw).trim().replace(/\s+/g, '').toUpperCase();
 }
 
+/** Normalleştirilmiş kodun sorunu (hata kodu) ya da '' (geçerli). */
+function userIdProblem_(uid) {
+  if (!uid) return 'E_USER_ID_REQUIRED';
+  if (uid.length > CONFIG.USER_ID_MAX_LENGTH) return 'E_USER_ID_TOO_LONG';
+  // E-tablo/Excel formül enjeksiyonunu önler.
+  if (/^[=+\-@]/.test(uid)) return 'E_USER_ID_INVALID';
+  return '';
+}
+
 /** Normalleştirir ve doğrular; geçersizse uygulama hatası fırlatır. */
 function requireUserId_(raw) {
   const uid = normalizeUserId_(raw);
-  if (!uid) fail_('E_USER_ID_REQUIRED');
-  if (uid.length > CONFIG.USER_ID_MAX_LENGTH) fail_('E_USER_ID_TOO_LONG');
-  // E-tablo/Excel formül enjeksiyonunu önler.
-  if (/^[=+\-@]/.test(uid)) fail_('E_USER_ID_INVALID');
+  const problem = userIdProblem_(uid);
+  if (problem) fail_(problem);
   return uid;
+}
+
+/** Eşleştirme anahtarı: büyük harf, yalnızca harf ve rakam (P-014 = p014 = P 014). */
+function participantKey_(v) {
+  return normalizeUserId_(v).replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+/** Listedeki ilk aktif ve geçerli eşleşmenin kanonik kodu; yoksa null. */
+function findParticipant_(rows, uid) {
+  const key = participantKey_(uid);
+  if (!key) return null;
+  const hit = rows.find(function (r) {
+    const id = normalizeUserId_(r.user_id);
+    return Number(r.active_status) === 1 && !userIdProblem_(id) && participantKey_(id) === key;
+  });
+  return hit ? normalizeUserId_(hit.user_id) : null;
+}
+
+/** Katılımcı listesi denetimi: { active, inactive, lines: ['HATA …' | 'UYARI …'] }. */
+function participantAudit_(indexedRows) {
+  const out = { active: 0, inactive: 0, lines: [] };
+  const byKey = Object.create(null);
+  indexedRows.forEach(function (x) {
+    const uid = normalizeUserId_(x.row.user_id);
+    const where = 'satır ' + x.rowNumber;
+    if (userIdProblem_(uid)) {
+      out.lines.push('HATA ' + where + ': geçersiz kod ("' + plain_(x.row.user_id) + '")');
+      return;
+    }
+    const status = parseBinary_(x.row.active_status);
+    if (status === null) out.lines.push('UYARI ' + uid + ' (' + where + '): active_status 0 veya 1 değil → pasif sayılır');
+    if (status === 1) out.active++;
+    else out.inactive++;
+    const key = participantKey_(uid);
+    (byKey[key] = byKey[key] || []).push(uid + ' (' + where + ')');
+  });
+  Object.keys(byKey).forEach(function (key) {
+    if (byKey[key].length > 1) out.lines.push('HATA aynı kabul edilen kodlar: ' + byKey[key].join(', '));
+  });
+  return out;
+}
+
+/** Yer tutucu tohumla birebir aynı (case_id + case_description) vakaların kimlikleri. */
+function placeholderIds_(cases) {
+  const seeds = Object.create(null);
+  seedCases_().forEach(function (s) { seeds[s.case_id] = String(s.case_description).trim(); });
+  return cases
+    .filter(function (c) { return seeds[String(c.case_id).trim()] === plain_(c.case_description).trim(); })
+    .map(function (c) { return String(c.case_id).trim(); });
+}
+
+/**
+ * Oturum kapatma kararı için. rows: Session<n> sayfasının tüm satırları.
+ * inProgress: vakası eksik · windowOpen: özet penceresi açık · neverViewed: tamamlamış, özet hiç verilmemiş.
+ */
+function sessionActivity_(rows, now) {
+  const byUser = Object.create(null);
+  let last = null;
+  rows.forEach(function (r) {
+    const uid = normalizeUserId_(r.user_id);
+    if (!uid) return;
+    (byUser[uid] = byUser[uid] || []).push(r);
+    const iso = toIsoOrNull_(plain_(r.case_submission_time));
+    if (iso) {
+      const t = new Date(iso).getTime();
+      if (last === null || t > last) last = t;
+    }
+  });
+  const out = {
+    participants: 0, inProgress: 0, windowOpen: 0, neverViewed: 0,
+    minutesSinceLastSubmission: last === null ? null : Math.floor((now.getTime() - last) / 60000)
+  };
+  Object.keys(byUser).forEach(function (uid) {
+    const mine = uniqueUserRows_(byUser[uid], uid);
+    out.participants++;
+    if (mine.length < CONFIG.CASES_PER_SESSION) out.inProgress++;
+    else if (!mine.some(function (r) { return Number(r.feedback_viewed) === 1; })) out.neverViewed++;
+    else if (isSummaryWindowOpen_(mine, now)) out.windowOpen++;
+  });
+  return out;
 }
 
 /** Yalnızca 0/1 (sayı) veya '0'/'1' (metin) kabul edilir; aksi halde null. */
@@ -964,7 +1174,8 @@ function buildRecord_(ctx) {
     case_global_order: (ctx.n - 1) * CONFIG.CASES_PER_SESSION + order,
     case_start_time: ctx.caseStartTime,
     case_submission_time: ctx.now.toISOString(),
-    response_time_seconds: normalizeResponseTime_(p.responseTimeSeconds),
+    response_time_seconds: normalizeSeconds_(p.responseTimeSeconds),
+    hidden_time_seconds: normalizeSeconds_(p.hiddenTimeSeconds),
     user_triage_level: ctx.answers.user_triage_level,
     reference_triage_level: String(c.reference_triage_level),
     pat_total_score: s.patScore,
@@ -1028,6 +1239,7 @@ function buildCaseFeedback_(row, c) {
  * Ortak oturum özetleyici (toplu geri bildirim, Gelişimim ve rozetler aynı sayıları kullanır).
  * rows: tek kullanıcının tek oturumdaki yanıt satırları (case_id'ye göre tekilleştirilmiş).
  * Güven düzeyi yalnızca sayılır ve ortalaması alınır; hiçbir doğruluk ölçüsüyle birleştirilmez.
+ * perfectCases: PDÜ, vital bulgular ve triyaj kategorisinin üçü de tam doğru olan vaka sayısı.
  */
 function summarizeRows_(rows) {
   const sum = function (field) {
@@ -1050,19 +1262,12 @@ function summarizeRows_(rows) {
     totalTimeSeconds: Math.round(sum('response_time_seconds') * 10) / 10,
     confidenceCounts: counts,
     confidenceMean: mean,
-    redAreaCorrect: areaCorrect_(rows, 'KIRMIZI'),
-    greenAreaCorrect: areaCorrect_(rows, 'YESIL')
+    perfectCases: rows.filter(function (r) {
+      return Number(r.pat_total_score) === PAT_ITEMS.length &&
+        Number(r.vital_sign_total_score) === VITAL_ITEMS.length &&
+        Number(r.triage_exact_match) === 1;
+    }).length
   };
-}
-
-/**
- * Referansı `code` olan tüm vakalar o koda mı atanmış? (3 grupta kategori = renk alanı)
- * Böyle vaka yoksa null.
- */
-function areaCorrect_(rows, code) {
-  const ref = rows.filter(function (r) { return String(r.reference_triage_level) === code; });
-  if (!ref.length) return null;
-  return ref.every(function (r) { return String(r.user_triage_level) === code; });
 }
 
 /**
@@ -1130,6 +1335,10 @@ function validateCase_(c) {
   NUMERIC_VITAL_FIELDS.forEach(function (f) {
     if (!isNum_(c[f])) e.push(f + ' sayı olmalı');
   });
+  // Değerlendirilecek her PDÜ bileşeni için gözlem metni veya geçerli bir medya bağlantısı gerekir.
+  PAT_ITEMS.forEach(function (it) {
+    if (isBlank_(c[it.text]) && !safeUrl_(c[it.media])) e.push(it.text + ' boş ve geçerli ' + it.media + ' yok');
+  });
   return e;
 }
 
@@ -1145,7 +1354,6 @@ function caseWarnings_(c) {
     w.push('clinical_category izinli listede değil ("' + plain_(c.clinical_category) + '")');
   }
   PAT_ITEMS.forEach(function (it) {
-    if (isBlank_(c[it.text]) && isBlank_(c[it.media])) w.push(it.text + ' ve ' + it.media + ' ikisi de boş');
     if (!isBlank_(c[it.media]) && !safeUrl_(c[it.media])) w.push(it.media + ' geçerli bir http(s) bağlantısı değil');
   });
   if (isBlank_(c.case_title)) w.push('case_title boş');
@@ -1204,7 +1412,7 @@ function triageDistribution_(cases) {
 function uniqueUserRows_(rows, uid) {
   const seen = Object.create(null);
   return rows.filter(function (r) {
-    if (String(r.user_id) !== uid) return false;
+    if (normalizeUserId_(r.user_id) !== uid) return false;
     const id = String(r.case_id);
     if (seen[id]) return false;
     seen[id] = true;
@@ -1220,7 +1428,8 @@ function userRowsByCase_(indexedRows, uid, cases) {
   const duplicates = [];
   indexedRows.forEach(function (x) {
     const id = String(x.row.case_id);
-    if (String(x.row.user_id) !== uid || !wanted[id]) return;
+    // El ile düzeltilmiş hücreler (sonda boşluk, küçük harf) de eşleşsin.
+    if (normalizeUserId_(x.row.user_id) !== uid || !wanted[id]) return;
     if (byCase[id]) duplicates.push(id);
     else byCase[id] = x;
   });
@@ -1263,9 +1472,10 @@ function clientTriageLevels_() {
   });
 }
 
-function normalizeResponseTime_(x) {
-  if (!isNum_(x)) return '';
-  return Math.max(0, Math.round(Number(x) * 10) / 10);
+/** Saniye cinsinden süre (0,1 sn). Negatif veya sayısal olmayan değer eksik veri ('') olarak yazılır. */
+function normalizeSeconds_(x) {
+  if (!isNum_(x) || Number(x) < 0) return '';
+  return Math.round(Number(x) * 10) / 10;
 }
 
 function toIsoOrNull_(v) {
@@ -1302,7 +1512,7 @@ function isInt_(v) {
  *  yanıtlar araştırmacı gözden geçirmeden gerçek veri toplamada KULLANILMAMALIDIR.
  *  Referans triyaj 3 gruba dönüştürülmüştür: Kırmızı K1/K2 → KIRMIZI,
  *  Sarı K1/K2 → SARI, Yeşil → YESIL.
- *  Yalnızca CaseDetails sayfası yokken (veya tamamen boşken) yüklenir.
+ *  Yalnızca CaseDetails sayfası yokken (veya tamamen boşken) ve PASİF (active_status = 0) yüklenir.
  * ========================================================================== */
 function seedCases_() {
   return [

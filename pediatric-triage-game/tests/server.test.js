@@ -3,14 +3,19 @@
 // Çalıştırma: node --test tests/*.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadCode } = require('./harness');
+const { loadCode, activateAllCases, addParticipants, TEST_PARTICIPANTS } = require('./harness');
 
 const j = (x) => JSON.parse(JSON.stringify(x));
 
-/** Boş e-tabloda initializeDatabase çalıştırılmış ortam. */
+/**
+ * Boş e-tabloda initializeDatabase çalıştırılmış ortam. Yer tutucu vakalar pasif yüklendiği için
+ * testlerde açılır; testlerde kullanılan katılımcı kodları izin listesine eklenir.
+ */
 function fresh(session = 1, config) {
   const g = loadCode({ session, config });
   g.ctx.initializeDatabase();
+  activateAllCases(g.env);
+  addParticipants(g.env, TEST_PARTICIPANTS);
   g.env.logs.length = 0;
   return g;
 }
@@ -34,7 +39,8 @@ function payload(start, caseId, patch) {
   const c = byId[caseId];
   const p = {
     userId: start.userId, loginId: start.loginId, sessionNumber: start.sessionNumber, caseId,
-    caseStartTime: new Date(Date.now() - 60000).toISOString(), responseTimeSeconds: 60.04,
+    caseVersion: c.case_version,
+    caseStartTime: new Date(Date.now() - 60000).toISOString(), responseTimeSeconds: 60.04, hiddenTimeSeconds: 5.01,
     deviceType: 'desktop', honorAccepted: true
   };
   ANSWERS.forEach(([ans, ref]) => { p[ans] = c[ref]; });
@@ -106,18 +112,32 @@ test('T03 — v1 CaseDetails varken E_CASE_SHEET_V1; UserInput sayfasına dokunu
   assert.equal(sheet(g, 'Session1'), null);
 });
 
-test('T04 — auditCaseDataset: 5 oturumun tümü 3/3 · {1,2,3} · K/S/Y ✓; hata yok', () => {
+test('T04 — auditCaseDataset: 5 oturumun tümü 3/3 · {1,2,3} · K/S/Y ✓; yer tutucular uyarılır', () => {
   const g = fresh(2);
   assert.equal(g.call('auditCaseDataset'), undefined);
-  const log = g.env.logs.join('\n');
+  let log = g.env.logs.join('\n');
   for (let n = 1; n <= 5; n++) {
-    assert.match(log, new RegExp('Oturum ' + n + ': 3/3 vaka · sıra \\{1,2,3\\} · K/S/Y ✓ · Session' + n + ' ✓\\n'));
+    const ids = SEEDS.filter((c) => c.session === n).map((c) => c.case_id).join(', ');
+    assert.match(log, new RegExp('Oturum ' + n + ': 3/3 vaka · sıra \\{1,2,3\\} · K/S/Y ✓ · Session' + n +
+      ' ✓ · UYARI gözden geçirilmemiş yer tutucu: ' + ids + '\\n'));
   }
-  assert.doesNotMatch(log, /GEÇERSİZ|HATA|UYARI|HAZIR DEĞİL/);
+  assert.doesNotMatch(log, /GEÇERSİZ|HATA|HAZIR DEĞİL/);
   assert.match(log, /Anormal referanslar: GG 4 · Sİ 3 · CD 3 · Ateş 7 · KH 8 · SS 5 · KB 2 · SpO2 3/);
   assert.match(log, /Referans triyaj: Kırmızı 5 · Sarı 5 · Yeşil 5/);
-  assert.match(log, /AKTİF OTURUM: CURRENT_SESSION = 2 → HAZIR$/m);
+  assert.match(log, new RegExp('Katılımcılar: aktif ' + TEST_PARTICIPANTS.length + ' · pasif 0\\n'));
+  assert.match(log, /AKTİF OTURUM: CURRENT_SESSION = 2 → HAZIR — UYARI: gözden geçirilmemiş yer tutucu vaka aktif \(CASE-004, CASE-005, CASE-006\)$/m);
+  assert.match(log, /Oturum 2 durumu: 0 katılımcı · vakası eksik 0 · özet penceresi açık 0 · özeti hiç açılmamış 0 · son gönderim —/);
   assert.match(log, /Oyun bileşenleri: güven düzeyi AÇIK · Gelişimim AÇIK · rozetler AÇIK · özet yeniden açma süresi 30 dk/);
+
+  // Gözden geçirilmiş (metni değişmiş) vakalarda uyarı yok
+  const cs = sheet(g, 'CaseDetails');
+  const col = j(g.get('CASE_HEADERS')).indexOf('case_description');
+  for (let r = 2; r <= 16; r++) cs._data[r - 1][col] += ' (gözden geçirildi)';
+  g.env.logs.length = 0;
+  g.ctx.auditCaseDataset();
+  log = g.env.logs.join('\n');
+  assert.doesNotMatch(log, /GEÇERSİZ|HATA|UYARI|HAZIR DEĞİL/);
+  assert.match(log, /AKTİF OTURUM: CURRENT_SESSION = 2 → HAZIR$/m);
 });
 
 test('auditCaseDataset — sorunları raporlar', () => {
@@ -188,7 +208,7 @@ test('T07 — CURRENT_SESSION = 2: CASE-004, CASE-005, CASE-006 bu sırayla', ()
   const g = fresh(2);
   const { boot, out } = bootOf(g);
   assert.deepEqual(boot, {
-    activeSession: 2, totalSessions: 5, casesPerSession: 3, appVersion: '2.2.0', requireHonor: true,
+    activeSession: 2, totalSessions: 5, casesPerSession: 3, appVersion: '2.3.0', requireHonor: true,
     appUrl: 'https://script.google.com/macros/s/TEST/exec'
   });
   assert.equal(out.title, 'Pediatrik Triyaj — PDÜ Değerlendirmesi');
@@ -283,7 +303,7 @@ test('T13 — "014" baştaki sıfır korunarak; zaman damgaları metin olarak ya
   assert.equal(r.user_id, '014');
   assert.equal(typeof r.case_start_time, 'string');
   assert.equal(typeof r.case_submission_time, 'string');
-  assert.equal(r.app_version, '2.2.0');
+  assert.equal(r.app_version, '2.3.0');
   assert.deepEqual(login(g, '014').completedCaseIds, ['CASE-001']);
 });
 
@@ -461,7 +481,7 @@ test('T28 — 3. vakadan sonra özet; toplamlar satırlarla tutarlı, sıra koru
     vital: total('vital_sign_total_score'),
     dangerousUnderTriage: 1, totalTimeSeconds: 221.6,
     confidenceCounts: { 1: 0, 2: 3, 3: 0 }, confidenceMean: 2,
-    redAreaCorrect: false, greenAreaCorrect: true
+    perfectCases: 0
   });
   assert.ok(sum.cases.every((c) => c.confidence === 2));
   assert.deepEqual([sum.totals.triageExact, sum.totals.pat, sum.totals.vital], [1, 8, 14]);
@@ -554,14 +574,25 @@ test('kilit alınamazsa E_BUSY; kilit her yolda dengeli bırakılır', () => {
   assert.deepEqual(g.env.lockErrors, []);
 });
 
-test('özet: kilit alınamazsa yine döner, güncelleme atlanır ve günlüğe yazılır', () => {
+test('özet: ilk verilişte damga yazılamazsa E_BUSY (pencere başlamadan özet verilmez); yeniden açmada kilit yok', () => {
   const g = fresh(1);
   completeSession(g, 'P-040');
   g.env.lockAvailable = false;
-  const sum = g.call('getSessionSummary', 'P-040');
-  assert.equal(sum.cases.length, 3);
-  assert.ok(rows(g, 'Session1').every((r) => r.feedback_viewed === 0));
-  assert.match(g.env.logs.join('\n'), /feedback_viewed güncellemesi atlandı/);
+  assert.deepEqual(g.call('getSessionSummary', 'P-040'), {
+    error: 'Sunucu şu anda yoğun. Lütfen birkaç saniye sonra tekrar deneyin.', code: 'E_BUSY'
+  });
+  assert.ok(rows(g, 'Session1').every((r) => r.feedback_viewed === 0 && r.feedback_viewed_time === ''));
+  assert.match(g.env.logs.join('\n'), /feedback_viewed yazılamadı \(özet verilmedi\)/);
+  g.env.lockAvailable = true;
+  assert.equal(g.call('getSessionSummary', 'P-040').cases.length, 3);
+  const stamps = rows(g, 'Session1').map((r) => r.feedback_viewed_time);
+  assert.ok(stamps.every((t) => t && t === stamps[0]));
+  // 30 dk içinde yeniden açma: yazma yok, kilit denenmez
+  g.env.lockAvailable = false;
+  const attempts = g.env.lockAttempts;
+  assert.equal(g.call('getSessionSummary', 'P-040').cases.length, 3);
+  assert.equal(g.env.lockAttempts, attempts);
+  assert.deepEqual(g.env.lockErrors, []);
 });
 
 test('eksik / bozuk Session sayfası', () => {
@@ -669,13 +700,13 @@ test('T42/T45 — Gelişimim: O1 ve O2 tamamlanmış; yalnızca sayısal alanlar
   assert.deepEqual(sum.history.map((h) => [h.sessionNumber, h.status]),
     [[1, 'completed'], [2, 'completed'], [3, 'none'], [4, 'none'], [5, 'none']]);
   const [h1, h2] = sum.history;
-  assert.deepEqual([h1.casesDone, h1.triageExact, h1.pat, h1.vital, h1.dangerousUnderTriage], [3, 3, 9, 15, 0]);
-  assert.deepEqual([h2.casesDone, h2.triageExact, h2.pat, h2.vital], [3, 2, 9, 15]);
+  assert.deepEqual([h1.casesDone, h1.triageExact, h1.pat, h1.vital, h1.dangerousUnderTriage, h1.perfectCases], [3, 3, 9, 15, 0, 3]);
+  assert.deepEqual([h2.casesDone, h2.triageExact, h2.pat, h2.vital, h2.perfectCases], [3, 2, 9, 15, 2]);
   assert.equal(h2.confidenceMean, 2.3);
   assert.deepEqual(h2.confidenceCounts, { 1: 0, 2: 2, 3: 1 });
   // T45: yalnızca sayısal özet; vaka kimliği, başlık, referans veya metin yok
   const allowed = ['sessionNumber', 'status', 'casesDone', 'triageExact', 'pat', 'vital', 'dangerousUnderTriage',
-    'totalTimeSeconds', 'confidenceCounts', 'confidenceMean', 'redAreaCorrect', 'greenAreaCorrect'];
+    'totalTimeSeconds', 'confidenceCounts', 'confidenceMean', 'perfectCases'];
   sum.history.forEach((h) => Object.keys(h).forEach((k) => assert.ok(allowed.includes(k), k)));
   const text = JSON.stringify(sum.history);
   assert.doesNotMatch(text, /CASE-|case_|reference|feedback|title/i);
@@ -722,7 +753,7 @@ test('T48 — bayraklar ayrı ayrı kapatılabilir', () => {
   assert.equal(sl.badgesEnabled, true);
   const sum = gl.call('getSessionSummary', 'P-L');
   assert.ok(!('history' in sum));
-  assert.equal(sum.totals.redAreaCorrect, true, 'rozet toplamları yine döner');
+  assert.equal(sum.totals.perfectCases, 3, 'rozet toplamları yine döner');
 
   const gb = fresh(1, { ENABLE_BADGES: false });
   assert.equal(login(gb).badgesEnabled, false);
@@ -802,4 +833,179 @@ test('T54 — sonraki oturum açılınca kilitli kullanıcı yeni oturumun 1. va
   assert.equal(s.status, 'active');
   assert.deepEqual(s.completedCaseIds, []);
   assert.equal(s.cases[0].case_id, 'CASE-007');
+});
+
+/* ---------------------------------------------------------------- v2.3 — geri bildirim düzeltmeleri */
+
+/** Bir sayfada başlığa göre hücre değiştirir (araştırmacının el ile düzenlemesi). */
+function setCell(g, name, header, rowNumber, value) {
+  const sh = sheet(g, name);
+  sh.getRange(rowNumber, sh._data[0].indexOf(header) + 1).setValue(value);
+}
+
+test('v2.3 — yeni kurulum: CURRENT_SESSION = 0, yer tutucular pasif, boş Participants; oturum hazır değil', () => {
+  const g = loadCode();
+  assert.equal(g.get('CURRENT_SESSION'), 0, 'kod varsayılan olarak kapalı gelir');
+  assert.equal(bootOf(g).boot.activeSession, 0);
+  g.ctx.initializeDatabase();
+  const CH = j(g.get('CASE_HEADERS'));
+  assert.ok(rows(g, 'CaseDetails').every((r) => r.active_status === 0));
+  assert.deepEqual(rows(g, 'CaseDetails').map((r) => { const c = Object.assign({}, r); delete c.active_status; return c; }),
+    SEEDS.map((c) => { const x = {}; CH.forEach((h) => { if (h !== 'active_status') x[h] = c[h]; }); return x; }),
+    'tohum verisinin geri kalanı birebir');
+  const ps = sheet(g, 'Participants');
+  assert.deepEqual(ps.getRange(1, 1, 1, 2).getValues()[0], ['user_id', 'active_status']);
+  assert.equal(ps.getLastRow(), 1);
+  assert.equal(ps._frozen, 1);
+  assert.equal(ps._formats[1][0], '@');
+  assert.equal(ps._formats[999][0], '@');
+  assert.deepEqual(j(ps._validation[1][1].list), ['0', '1']);
+  assert.equal(ps._validation[1][1].allowInvalid, false);
+  const g1 = redeploy(g, 1);
+  g1.env.logs.length = 0;
+  g1.ctx.auditCaseDataset();
+  const log = g1.env.logs.join('\n');
+  assert.match(log, /Oturum 1: 0\/3 vaka/);
+  assert.match(log, /Katılımcılar: aktif 0 · pasif 0/);
+  assert.match(log, /AKTİF OTURUM: CURRENT_SESSION = 1 → HAZIR DEĞİL: .*aktif katılımcı yok/);
+  addParticipants(g1.env, ['P-014']);
+  assert.equal(g1.call('startSession', 'P-014', true).code, 'E_SESSION_NOT_READY');
+  // Var olan Participants sayfasına initializeDatabase dokunmaz
+  const before = g1.env.ss.snapshot();
+  g1.ctx.initializeDatabase();
+  assert.equal(g1.env.ss.snapshot(), before);
+});
+
+test('G1.1 — izin listesi: bilinmeyen / pasif kod üç API\'de reddedilir; p014 kanonik P-014 olarak kaydedilir', () => {
+  const g = loadCode({ session: 1 });
+  g.ctx.initializeDatabase();
+  activateAllCases(g.env);
+  addParticipants(g.env, ['P-014', 'P-015']);
+  addParticipants(g.env, ['P-099'], 0);
+  const unknown = {
+    error: 'Katılımcı kodu tanınmadı. Lütfen araştırmacının size ilettiği kodu kontrol edin.', code: 'E_PARTICIPANT_UNKNOWN'
+  };
+  assert.deepEqual(g.call('startSession', 'P-999', true), unknown);
+  assert.deepEqual(g.call('startSession', 'P-099', true), unknown, 'pasif katılımcı');
+  assert.deepEqual(g.call('startSession', 'P-14', true), unknown, 'baştaki sıfır farklı koddur');
+  assert.equal(g.call('startSession', '=P-014', true).code, 'E_USER_ID_INVALID', 'formül denetimi önce');
+  const s = login(g, ' p014 ');
+  assert.equal(s.userId, 'P-014');
+  assert.deepEqual(g.call('submitCase', payload(s, 'CASE-001', { userId: 'P-998' })), unknown);
+  assert.equal(rows(g, 'Session1').length, 0);
+  assert.ok(g.call('submitCase', payload(s, 'CASE-001', { userId: 'p 0-14' })).ok);
+  assert.equal(rows(g, 'Session1')[0].user_id, 'P-014');
+  assert.deepEqual(g.call('getSessionSummary', 'P-998'), unknown);
+  // Oturum ortasında pasifleştirilen katılımcı gönderemez
+  setCell(g, 'Participants', 'active_status', 2, 0);
+  assert.deepEqual(g.call('submitCase', payload(s, 'CASE-002')), unknown);
+  assert.equal(rows(g, 'Session1').length, 1);
+  // Participants sayfası yoksa da aynı genel hata; araştırmacı için günlükte açık mesaj
+  sheet(g, 'Participants')._name = 'Participants_eski';
+  assert.deepEqual(g.call('startSession', 'P-015', true), unknown);
+  assert.match(g.env.logs.join('\n'), /"Participants" sayfası yok/);
+});
+
+test('G1.2 — vaka sürümü: görülen sürüm gönderilir; değiştiyse puanlanmaz, yeniden girişte yeni sürüm', () => {
+  const g = fresh(1);
+  const s = login(g, 'P-014');
+  assert.equal(s.cases[0].case_version, 1);
+  const missing = payload(s, 'CASE-001');
+  delete missing.caseVersion;
+  assert.deepEqual(g.call('submitCase', missing), { error: 'Eksik gönderim: caseVersion alanı eksik.', code: 'E_MISSING_FIELD' });
+  setCell(g, 'CaseDetails', 'case_version', 2, 2);
+  setCell(g, 'CaseDetails', 'heart_rate_value', 2, 180);
+  setCell(g, 'CaseDetails', 'heart_rate_reference', 2, 1);
+  assert.deepEqual(g.call('submitCase', payload(s, 'CASE-001')), {
+    error: 'Bu vaka siz yanıtlarken güncellendi. Lütfen sayfayı yenileyip vakayı yeniden yanıtlayın.', code: 'E_CASE_VERSION_CHANGED'
+  });
+  assert.equal(rows(g, 'Session1').length, 0, 'görülmeyen sürüme göre puanlama yapılmaz');
+  const again = login(g, 'P-014');
+  assert.equal(again.cases[0].case_version, 2);
+  assert.equal(again.cases[0].heart_rate_value, 180);
+  assert.ok(g.call('submitCase', payload(again, 'CASE-001', { caseVersion: 2, user_heart_rate_classification: 1 })).ok);
+  const r = rows(g, 'Session1')[0];
+  assert.deepEqual([r.case_version, r.heart_rate_correct], [2, 1]);
+  // İlk gönderim ulaşmışsa sürüm sonradan değişse de yeniden deneme E_DUPLICATE (istemci için başarı) döner
+  setCell(g, 'CaseDetails', 'case_version', 2, 3);
+  assert.equal(g.call('submitCase', payload(again, 'CASE-001', { caseVersion: 2 })).code, 'E_DUPLICATE');
+});
+
+test('G1.6 — hidden_time_seconds yazılır; negatif veya geçersiz süreler 0 değil boş yazılır', () => {
+  const g = fresh(1);
+  const s = login(g, 'P-1');
+  assert.ok(g.call('submitCase', payload(s, 'CASE-001', { responseTimeSeconds: 131.46, hiddenTimeSeconds: 12.34 })).ok);
+  assert.ok(g.call('submitCase', payload(s, 'CASE-002', { responseTimeSeconds: -5, hiddenTimeSeconds: 'x' })).ok);
+  const p3 = payload(s, 'CASE-003');
+  delete p3.hiddenTimeSeconds;
+  assert.ok(g.call('submitCase', p3).ok);
+  assert.deepEqual(rows(g, 'Session1').map((r) => [r.response_time_seconds, r.hidden_time_seconds]),
+    [[131.5, 12.3], ['', ''], [60, '']]);
+});
+
+test('G1.4 — araştırmacı fonksiyonları yalnızca betik sahibi tarafından çalıştırılabilir', () => {
+  const g = fresh(1);
+  const before = g.env.ss.snapshot();
+  const visitors = [['', 'owner@example.com'], ['participant@example.com', 'owner@example.com']];
+  visitors.forEach(([active, effective]) => {
+    g.env.activeEmail = active;
+    g.env.effectiveEmail = effective;
+    ['initializeDatabase', 'auditCaseDataset', 'previewSession'].forEach((fn) => {
+      assert.throws(() => g.call(fn), /yalnızca betik sahibi tarafından Apps Script düzenleyicisinden/, fn + ' ' + active);
+    });
+  });
+  assert.deepEqual(g.env.logs, [], 'rapor üretilmez');
+  assert.equal(g.env.ss.snapshot(), before);
+  g.env.activeEmail = g.env.effectiveEmail = 'owner@example.com';
+  assert.equal(g.call('auditCaseDataset'), undefined);
+  assert.match(g.env.logs.join('\n'), /=== VAKA BANKASI DENETİMİ ===/);
+  // Katılımcı API'si bundan etkilenmez (anonim ziyaretçi)
+  g.env.activeEmail = '';
+  assert.equal(login(g, 'P-1').status, 'active');
+});
+
+test('G2.2 — el ile düzeltilmiş user_id hücresi (boşluk, küçük harf) aynı katılımcıya eşleşir', () => {
+  const g = fresh(1);
+  const s = login(g, 'P-014');
+  g.call('submitCase', payload(s, 'CASE-001'));
+  g.call('submitCase', payload(s, 'CASE-002'));
+  setCell(g, 'Session1', 'user_id', 2, ' p-014 ');
+  const again = login(g, 'P-014');
+  assert.deepEqual(again.completedCaseIds, ['CASE-001', 'CASE-002']);
+  assert.ok(g.call('submitCase', payload(again, 'CASE-003')).ok);
+  const sum = g.call('getSessionSummary', 'P-014');
+  assert.equal(sum.cases.length, 3);
+  assert.equal(sum.history[0].status, 'completed');
+  assert.ok(rows(g, 'Session1').every((r) => r.feedback_viewed === 1));
+});
+
+test('G1 ek-1 — gözlem metni ve geçerli medyası olmayan PDÜ bileşeni oturumu hazır olmaktan çıkarır', () => {
+  const g = fresh(1);
+  setCell(g, 'CaseDetails', 'pat_appearance_text', 2, '');
+  assert.equal(g.call('startSession', 'P-1', true).code, 'E_SESSION_NOT_READY');
+  setCell(g, 'CaseDetails', 'pat_appearance_media_url', 2, 'https://example.org/gorunum.jpg');
+  assert.equal(login(g, 'P-1').status, 'active');
+});
+
+test('G1 ek-2 — denetim raporu oturum kapatma durumunu gösterir', () => {
+  const g = fresh(2);
+  completeSession(g, 'P-1');
+  g.call('getSessionSummary', 'P-1');                        // özet açık (30 dk içinde)
+  completeSession(g, 'P-2');                                 // tamamladı, özet hiç verilmedi
+  completeSession(g, 'P-3');
+  g.call('getSessionSummary', 'P-3');
+  setViewedAgo(g, 'Session2', 'P-3', 45);                    // pencere kapandı
+  g.call('submitCase', payload(login(g, 'P-4'), 'CASE-004')); // vakası eksik
+  g.env.logs.length = 0;
+  g.ctx.auditCaseDataset();
+  const log = g.env.logs.join('\n');
+  assert.match(log, /Oturum 2 durumu: 4 katılımcı · vakası eksik 1 · özet penceresi açık 1 · özeti hiç açılmamış 1 · son gönderim 0 dk önce/);
+  assert.match(log, /Oturumu kapatmadan önce "vakası eksik" ve "özet penceresi açık" 0 olmalı ya da son gönderimin üzerinden en az 30 dk geçmiş olmalı\./);
+});
+
+test('G1.3 — bağlı e-tablo bulunamazsa açık günlük mesajı, istemciye E_INTERNAL', () => {
+  const g = fresh(1);
+  g.ctx.SpreadsheetApp.getActiveSpreadsheet = () => null;
+  assert.equal(g.call('startSession', 'P-1', true).code, 'E_INTERNAL');
+  assert.match(g.env.logs.join('\n'), /Bağlı e-tabloya erişilemedi/);
 });

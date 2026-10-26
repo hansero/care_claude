@@ -75,9 +75,12 @@ async function openPage(server, viewport = DESKTOP) {
   page.on('pageerror', (e) => page.errors.push(String(e)));
   await page.exposeFunction('__gsrun', async (fn, argsJson) => {
     server.calls.push(fn);
+    if (server.beforeCall) server.beforeCall(fn);
+    // failNext[fn]: tek mesaj (bir kez) ya da mesaj dizisi (ardışık her çağrı için bir tane)
     if (server.failNext[fn]) {
-      const msg = server.failNext[fn];
-      delete server.failNext[fn];
+      const f = server.failNext[fn];
+      const msg = Array.isArray(f) ? f.shift() : f;
+      if (!Array.isArray(f) || f.length === 0) delete server.failNext[fn];
       return JSON.stringify({ fail: msg });
     }
     const res = server.g.ctx[fn](...JSON.parse(argsJson));
@@ -96,8 +99,15 @@ async function openPage(server, viewport = DESKTOP) {
     return route.abort();
   });
   await page.goto(APP);
+  await fastRetries(page);
   return page;
 }
+
+/** Sessiz yeniden deneme beklemelerini testte kısaltır (1–4 sn → 5–15 ms; büyüme aynı). */
+async function fastRetries(page, base = 5, spread = 10) {
+  await page.evaluate(([b, sp]) => { window.RETRY_BASE_MS = b; window.RETRY_SPREAD_MS = sp; }, [base, spread]);
+}
+const count = (server, fn) => server.calls.filter((c) => c === fn).length;
 
 const visible = (page, sel) => page.locator(sel).isVisible();
 const text = (page, sel) => page.locator(sel).innerText();
@@ -213,8 +223,10 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
   assert.equal(await text(page, '#headerMeta'), 'Katılımcı P-014 · Oturum 1/5 · Vaka 2/3');
   assert.equal(await page.locator('.progress .dot.done').count(), 1);
   await answerCase(page, 'AAAAAANA', 'YESIL', '1');   // tehlikeli düşük triyaj
-  server.failNext.submitCase = 'Ağ bağlantısı koptu';
+  server.failNext.submitCase = Array(4).fill('Ağ bağlantısı koptu');   // ilk deneme + 3 sessiz yeniden deneme
+  const calls0 = count(server, 'submitCase');
   await submit(page);
+  assert.equal(count(server, 'submitCase'), calls0 + 4, 'hata ancak 3 sessiz yeniden denemeden sonra gösterilir');
   assert.equal(await text(page, '#caseError'), 'Bağlantı hatası: Ağ bağlantısı koptu — lütfen tekrar deneyin.');
   const frozen = await page.evaluate(() => window.state.timer.frozen);
   assert.ok(frozen && frozen.responseTimeSeconds >= 0, 'süreler ilk tıklamada donduruldu');
@@ -223,15 +235,14 @@ test('masaüstü: giriş → 3 vaka → toplu geri bildirim (T11, T14–T18, T28
   assert.equal(await page.locator('#screen-case input[type=radio]:checked').count(), 10, 'yanıtlar korunur');
   assert.equal(server.rows('Session1').length, 1);
 
+  // Yanıtı kaybolan gönderim: kayıt sunucuya ulaştı; sessiz yeniden deneme E_DUPLICATE alır → başarı yolu
   server.failAfterServer.submitCase = 'Zaman aşımı';
   await submit(page);
-  assert.match(await text(page, '#caseError'), /^Bağlantı hatası: Zaman aşımı/);
-  assert.equal(server.rows('Session1').length, 2, 'ilk deneme sunucuya ulaştı');
-  assert.equal(server.rows('Session1')[1].response_time_seconds, frozen.responseTimeSeconds, 'yeniden denemede aynı süre');
-  assert.equal(server.rows('Session1')[1].case_version, 1);
-  await submit(page);   // → E_DUPLICATE → başarı yolu
+  assert.equal(await visible(page, '#caseError'), false, 'kullanıcı hata görmez');
   assert.equal(await text(page, '#savedCard .saved-title'), '✓ Vaka 2 / 3 kaydedildi.');
   assert.equal(server.rows('Session1').length, 2, 'ikinci satır yazılmadı');
+  assert.equal(server.rows('Session1')[1].response_time_seconds, frozen.responseTimeSeconds, 'yeniden denemede aynı süre');
+  assert.equal(server.rows('Session1')[1].case_version, 1);
 
   // Sayfa yenilenir, aynı kodla giriş → doğrudan Vaka 3 (T18)
   await page.close();
@@ -446,7 +457,7 @@ test('özet yüklenemezse "Geri bildirimi tekrar yükle" (§9.9)', async () => {
   await login(page, 'P-SF');
   for (let i = 0; i < 3; i++) {
     await answerCase(page, 'NNNNNNNN', 'SARI');
-    if (i === 2) server.failNext.getSessionSummary = 'Sunucuya ulaşılamadı';
+    if (i === 2) server.failNext.getSessionSummary = Array(4).fill('Sunucuya ulaşılamadı');
     await submit(page);
     if (i < 2) await page.click('#btnNext');
   }
@@ -623,7 +634,9 @@ test('G1.2 + G2.5 — vaka güncellenirse engelleyici mesaj; adres yoksa "Sayfay
   await answerCase(page, 'NNNANNNN', 'YESIL');
   const cs = server.g.env.ss.getSheetByName('CaseDetails');
   const H = JSON.parse(JSON.stringify(server.g.get('CASE_HEADERS')));
-  cs.getRange(2, H.indexOf('case_version') + 1).setValue(2);   // araştırmacı CASE-001'i güncelledi
+  const edited = cs.getRange(2, H.indexOf('case_version') + 1);
+  edited.setValue(2);                                          // araştırmacı CASE-001'i el ile güncelledi
+  server.g.ctx.onEdit({ range: edited });                      // E-Tablolar'daki basit tetikleyici önbelleği boşaltır
   await submit(page);
   assert.equal(await text(page, '#blockingCard .error-msg'),
     'Bu vaka siz yanıtlarken güncellendi. Lütfen sayfayı yenileyip vakayı yeniden yanıtlayın.');
@@ -644,4 +657,85 @@ test('G1.2 + G2.5 — vaka güncellenirse engelleyici mesaj; adres yoksa "Sayfay
   assert.equal(server.rows('Session1')[0].case_version, 2);
   assert.deepEqual(page.errors, []);
   await page.close();
+});
+
+test('Çözüm 2 — yoğunlukta sessiz yeniden deneme: giriş, gönderim ve özet hata göstermeden tamamlanır', async () => {
+  const server = makeServer(1);
+  const page = await openPage(server);
+  // Giriş anı yığılması: 30 eşzamanlı yürütme sınırında çağrı hiç çalışmaz (hata işleyicisi) → sessizce yeniden dener
+  server.failNext.startSession = ['Too many simultaneous invocations', 'Too many simultaneous invocations'];
+  await login(page, 'P-1');
+  assert.equal(count(server, 'startSession'), 3);
+  assert.equal(await visible(page, '#loginError'), false);
+  assert.equal(await text(page, '#headerMeta'), 'Katılımcı P-1 · Oturum 1/5 · Vaka 1/3');
+
+  // Gönderim: kilit iki kez dolu (E_BUSY) → "Yanıtınız kaydediliyor…" ekranda kalır, üçüncü denemede kaydedilir
+  await fastRetries(page, 400, 10);
+  server.g.env.lockFailures = 2;
+  await answerCase(page, 'NNNANNNN', 'YESIL');
+  await page.click('#btnSubmit');
+  await page.waitForTimeout(150);
+  assert.ok(await visible(page, '#loading'), 'bekleme sırasında yükleniyor katmanı görünür');
+  assert.equal(await text(page, '#loadingText'), 'Yanıtınız kaydediliyor…');
+  assert.equal(await visible(page, '#caseError'), false);
+  await waitIdle(page);
+  await fastRetries(page);
+  assert.equal(await text(page, '#savedCard .saved-title'), '✓ Vaka 1 / 3 kaydedildi.');
+  assert.equal(count(server, 'submitCase'), 3);
+  assert.equal(server.rows('Session1').length, 1);
+
+  // Deneme hakkı biterse son yanıt her zamanki gibi gösterilir; kullanıcı yeniden gönderebilir
+  await page.click('#btnNext');
+  await answerCase(page, 'AAAAAANA', 'KIRMIZI');
+  server.g.env.lockAvailable = false;
+  const before = count(server, 'submitCase');
+  await submit(page);
+  assert.equal(count(server, 'submitCase'), before + 4);
+  assert.equal(await text(page, '#caseError'), 'Sunucu şu anda yoğun. Lütfen birkaç saniye sonra tekrar deneyin.');
+  assert.ok(await page.locator('#btnSubmit').isEnabled());
+  server.g.env.lockAvailable = true;
+  await submit(page);
+  assert.equal(await text(page, '#savedCard .saved-title'), '✓ Vaka 2 / 3 kaydedildi.');
+  await page.click('#btnNext');
+
+  // Özet: ilk verilişte damga kilidi dolu (E_BUSY) → sessizce yeniden denenir
+  let armed = false;
+  server.beforeCall = (fn) => {
+    if (fn === 'getSessionSummary' && !armed) { armed = true; server.g.env.lockFailures = 1; }
+  };
+  await answerCase(page, 'NNNNANNA', 'SARI');
+  await submit(page);
+  await page.waitForSelector('#screen-summary:not([hidden])');
+  await waitIdle(page);
+  assert.equal(count(server, 'getSessionSummary'), 2);
+  assert.equal(await visible(page, '#summaryError'), false);
+  assert.equal(await page.locator('.case-fb').count(), 3);
+  assert.equal(server.rows('Session1').length, 3);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('Çözüm 2 — eşzamanlı 30 katılımcı: kilit yarışında tüm gönderimler hatasız kaydedilir', async () => {
+  const server = makeServer(1);
+  const pages = [];
+  for (let i = 0; i < 30; i++) {
+    const p = await openPage(server);
+    await login(p, 'P-' + (i + 1));
+    await answerCase(p, 'NNNANNNN', 'YESIL');
+    pages.push(p);
+  }
+  // Her üç denemeden birinde kilit dolu: istemciler sessizce ve rastgele beklemelerle yeniden dener
+  let n = 0;
+  server.beforeCall = (fn) => { if (fn === 'submitCase' && ++n % 3 === 0) server.g.env.lockFailures = 1; };
+  await Promise.all(pages.map((p) => p.click('#btnSubmit')));
+  await Promise.all(pages.map((p) => p.waitForSelector('#savedCard:not([hidden])')));
+  for (const p of pages) {
+    assert.equal(await visible(p, '#caseError'), false);
+    assert.deepEqual(p.errors, []);
+  }
+  const rs = server.rows('Session1');
+  assert.equal(rs.length, 30, 'her katılımcı için tek satır');
+  assert.equal(new Set(rs.map((r) => r.user_id)).size, 30);
+  assert.ok(count(server, 'submitCase') > 30, 'bazı gönderimler yeniden denendi');
+  await Promise.all(pages.map((p) => p.close()));
 });

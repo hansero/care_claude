@@ -38,7 +38,9 @@ class FakeRange {
       for (let c = 0; c < this.numCols; c++) fn(this.row - 1 + r, this.col - 1 + c, r, c);
     }
   }
+  getSheet() { return this.sheet; }
   getValues() {
+    this.sheet._reads++;
     const out = [];
     for (let r = 0; r < this.numRows; r++) {
       out.push(this.sheet._data[this.row - 1 + r].slice(this.col - 1, this.col - 1 + this.numCols));
@@ -88,6 +90,7 @@ class FakeSheet {
     this._bold = Array.from({ length: rows }, () => new Array(cols).fill(false));
     this._validation = Array.from({ length: rows }, () => nullRow(cols));
     this._frozen = 0;
+    this._reads = 0;   // getValues çağrı sayısı (önbellek testleri için)
   }
   getName() { return this._name; }
   getMaxRows() { return this._data.length; }
@@ -163,12 +166,47 @@ function makeEnv() {
   const env = {
     logs: [], consoleErrors: [], flushes: 0, writes: 0,
     lockAvailable: true, lockHeld: false, lockErrors: [], lockAttempts: 0,
+    lockFailures: 0,   // sonraki N tryLock çağrısı başarısız olur (geçici yoğunluk)
     appUrl: 'https://script.google.com/macros/s/TEST/exec',
     // Session: düzenleyicide etkin = asıl kullanıcı (sahip); anonim web ziyaretçisinde etkin e-posta boş.
     activeEmail: 'owner@example.com', effectiveEmail: 'owner@example.com'
   };
   env.ss = new FakeSpreadsheet(env);
+  env.cache = makeCache();
   return env;
+}
+
+/**
+ * Sahte CacheService.getScriptCache(): değerler metin olarak saklanır; 100 KB (102.400 bayt) üstü
+ * değer ve 21.600 sn üstü süre gerçek hizmetteki gibi hata fırlatır. broken = true iken her çağrı hata verir.
+ */
+function makeCache() {
+  const store = new Map();
+  const c = {
+    store, broken: false, stats: { gets: 0, hits: 0, puts: 0, removes: 0 },
+    expireAll() { store.clear(); },
+    api: {
+      get(key) {
+        if (c.broken) throw new Error('Cache service unavailable');
+        c.stats.gets++;
+        const e = store.get(key);
+        if (!e || e.exp <= Date.now()) { store.delete(key); return null; }
+        c.stats.hits++;
+        return e.value;
+      },
+      put(key, value, ttl) {
+        if (c.broken) throw new Error('Cache service unavailable');
+        if (typeof value !== 'string') throw new Error('Cache value must be a string');
+        if (Buffer.byteLength(value, 'utf8') > 102400) throw new Error('Argument too large: value');
+        if (!(ttl >= 1 && ttl <= 21600)) throw new Error('Invalid expiration: ' + ttl);
+        c.stats.puts++;
+        store.set(key, { value, exp: Date.now() + ttl * 1000 });
+      },
+      remove(key) { if (c.broken) throw new Error('Cache service unavailable'); c.stats.removes++; store.delete(key); },
+      removeAll(keys) { if (c.broken) throw new Error('Cache service unavailable'); c.stats.removes += keys.length; keys.forEach((k) => store.delete(k)); }
+    }
+  };
+  return c;
 }
 
 /**
@@ -210,6 +248,7 @@ function loadCode(o = {}) {
       getScriptLock: () => ({
         tryLock: () => {
           env.lockAttempts++;
+          if (env.lockFailures > 0) { env.lockFailures--; return false; }
           if (!env.lockAvailable) return false;
           if (env.lockHeld) env.lockErrors.push('tryLock while held');
           env.lockHeld = true;
@@ -222,6 +261,7 @@ function loadCode(o = {}) {
       })
     },
     Utilities: { getUuid: () => crypto.randomUUID() },
+    CacheService: { getScriptCache: () => env.cache.api },
     Session: {
       getActiveUser: () => ({ getEmail: () => env.activeEmail }),
       getEffectiveUser: () => ({ getEmail: () => env.effectiveEmail })

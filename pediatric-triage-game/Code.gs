@@ -14,7 +14,7 @@
  * ========================================================================== */
 const CURRENT_SESSION = 0;
 
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.3.1';
 
 const CONFIG = {
   STUDY_ID: 'PEDTRI-LC-01',
@@ -34,12 +34,14 @@ const CONFIG = {
   ENABLE_LEARNING_CURVE: true,         // özet sayfasında "Gelişimim" kartı
   ENABLE_BADGES: true,                 // özet sayfasında "Başarımlar" kartı
   // v2.2 tamamlama kilidi (§19)
-  SUMMARY_REVIEW_WINDOW_MINUTES: 30    // tamamlanan oturumun özeti, ilk görüntülemeden sonra bu süre boyunca yeniden açılabilir; sonra kilit
+  SUMMARY_REVIEW_WINDOW_MINUTES: 30,   // tamamlanan oturumun özeti, ilk görüntülemeden sonra bu süre boyunca yeniden açılabilir; sonra kilit
+  // v2.3 yük — oturum boyunca değişmeyen CaseDetails ve Participants okumaları önbellekte tutulur
+  CACHE_TTL_SECONDS: 300               // önbellek süresi (0 = önbellek kapalı); el ile düzenleme önbelleği hemen boşaltır (onEdit)
 };
 
 /**
  * ============================================================================
- *  Pediatrik Triyaj Ciddi Oyunu v2.3 — sunucu (Google Apps Script, V8)
+ *  Pediatrik Triyaj Ciddi Oyunu v2.3.1 — sunucu (Google Apps Script, V8)
  *
  *  Genel API (istemci) : doGet, startSession, submitCase, getSessionSummary
  *  Araştırmacı         : initializeDatabase, auditCaseDataset, previewSession
@@ -50,6 +52,8 @@ const CONFIG = {
  *  v2.2: tamamlanan oturuma bir sonraki oturuma kadar yeniden giriş yok
  *  v2.3: katılımcı izin listesi, vaka sürümü denetimi, gizli kalınan süre,
  *        yalnızca sahibin çalıştırabildiği araştırmacı fonksiyonları
+ *  v2.3.1: 100 katılımcı yükü — CaseDetails/Participants önbelleği (CacheService),
+ *        kilit yalnızca Session<n> okuma-yazma bölümünde; istemcide sessiz yeniden deneme
  *
  *  Yetki yalnızca bu betiğin bağlı olduğu e-tabloyla sınırlıdır:
  *  @OnlyCurrentDoc
@@ -320,10 +324,10 @@ function startSession(userId, honorAccepted) {
 /**
  * Tek vakayı puanlar ve Session<n> sayfasına bir satır yazar.
  * Yanıt doğruluk, referans, puan veya geri bildirim metni İÇERMEZ.
+ * Doğrulamalar kilitten önce yapılır; kilit yalnızca Session<n> okuma-yazma bölümünü kapsar
+ * (eşzamanlı gönderimler bu kısa bölümde sıraya girer).
  */
 function submitCase(payload) {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(CONFIG.LOCK_TIMEOUT_MS)) return err_('E_BUSY');
   try {
     const p = (payload && typeof payload === 'object') ? payload : {};
 
@@ -366,41 +370,45 @@ function submitCase(payload) {
     const theCase = cases.find(function (c) { return String(c.case_id) === String(p.caseId); });
     if (!theCase) return err_('E_CASE_NOT_IN_SESSION');
 
-    const sheet = getSessionSheet_(n);
-    const done = sessionProgress_(sheet, uid, cases).done;
-    if (done.indexOf(String(theCase.case_id)) !== -1) return err_('E_DUPLICATE');
-    // Yinelemeden SONRA: ilk gönderimi ulaşmış bir ağ yeniden denemesi yine başarı sayılır.
-    // Katılımcının görmediği bir sürüme göre puanlama yapılmaz.
-    if (Number(p.caseVersion) !== Number(theCase.case_version)) return err_('E_CASE_VERSION_CHANGED');
+    const lock = LockService.getScriptLock();
+    if (!lock.tryLock(CONFIG.LOCK_TIMEOUT_MS)) return err_('E_BUSY');
+    try {
+      const sheet = getSessionSheet_(n);
+      const done = sessionProgress_(sheet, uid, cases).done;
+      if (done.indexOf(String(theCase.case_id)) !== -1) return err_('E_DUPLICATE');
+      // Yinelemeden SONRA: ilk gönderimi ulaşmış bir ağ yeniden denemesi yine başarı sayılır.
+      // Katılımcının görmediği bir sürüme göre puanlama yapılmaz.
+      if (Number(p.caseVersion) !== Number(theCase.case_version)) return err_('E_CASE_VERSION_CHANGED');
 
-    const order = Number(theCase.session_order);
-    const earlierMissing = cases.some(function (c) {
-      return Number(c.session_order) < order && done.indexOf(String(c.case_id)) === -1;
-    });
-    if (earlierMissing) return err_('E_OUT_OF_ORDER');
+      const order = Number(theCase.session_order);
+      const earlierMissing = cases.some(function (c) {
+        return Number(c.session_order) < order && done.indexOf(String(c.case_id)) === -1;
+      });
+      if (earlierMissing) return err_('E_OUT_OF_ORDER');
 
-    const score = scoreResponse_(theCase, answers);
-    const record = buildRecord_({
-      n: n, uid: uid, loginId: loginId, caseStartTime: caseStartTime,
-      payload: p, answers: answers, theCase: theCase, score: score,
-      now: new Date(), responseId: 'R-' + Utilities.getUuid()
-    });
-    writeRecord_(sheet, record);
-    SpreadsheetApp.flush();   // kilit bırakılmadan önce yazımın görünür olması için
+      const score = scoreResponse_(theCase, answers);
+      const record = buildRecord_({
+        n: n, uid: uid, loginId: loginId, caseStartTime: caseStartTime,
+        payload: p, answers: answers, theCase: theCase, score: score,
+        now: new Date(), responseId: 'R-' + Utilities.getUuid()
+      });
+      writeRecord_(sheet, record);
+      SpreadsheetApp.flush();   // kilit bırakılmadan önce yazımın görünür olması için
 
-    const completed = done.length + 1;
-    return {
-      ok: true,
-      caseId: String(theCase.case_id),
-      sessionOrder: order,
-      completedCount: completed,
-      casesPerSession: CONFIG.CASES_PER_SESSION,
-      sessionComplete: completed >= CONFIG.CASES_PER_SESSION
-    };
+      const completed = done.length + 1;
+      return {
+        ok: true,
+        caseId: String(theCase.case_id),
+        sessionOrder: order,
+        completedCount: completed,
+        casesPerSession: CONFIG.CASES_PER_SESSION,
+        sessionComplete: completed >= CONFIG.CASES_PER_SESSION
+      };
+    } finally {
+      lock.releaseLock();
+    }
   } catch (e) {
     return toClientError_(e);
-  } finally {
-    lock.releaseLock();
   }
 }
 
@@ -512,16 +520,34 @@ function initializeDatabase() {
   auditCaseDataset();
 }
 
-/** Vaka bankası, katılımcı listesi ve oturum hazırlık raporunu Yürütme günlüğüne yazar. */
+/**
+ * Vaka bankası, katılımcı listesi ve oturum hazırlık raporunu Yürütme günlüğüne yazar.
+ * Önbelleği de boşaltır: vakaları veya katılımcıları düzenledikten sonra çalıştırmak değişikliği hemen yayar.
+ */
 function auditCaseDataset() {
   assertResearcher_();
+  clearTableCache_();
   Logger.log(auditReport_());
 }
 
 /** n. oturumun vakalarını referanslarıyla günlüğe yazar (n boşsa CURRENT_SESSION). */
 function previewSession(n) {
   assertResearcher_();
+  clearTableCache_();
   Logger.log(previewReport_(n));
+}
+
+/**
+ * Basit tetikleyici: CaseDetails veya Participants el ile düzenlenince önbellek hemen boşaltılır.
+ * Hiçbir zaman hata vermez; çalışmazsa önbellek en geç CACHE_TTL_SECONDS sonra kendiliğinden yenilenir.
+ */
+function onEdit(e) {
+  try {
+    const name = e.range.getSheet().getName();
+    if (name === CONFIG.CASE_SHEET || name === CONFIG.PARTICIPANT_SHEET) clearTableCache_();
+  } catch (err) {
+    // önbellek süresi dolunca yenilenir
+  }
 }
 
 /**
@@ -600,28 +626,107 @@ function headerRow_(sheet) {
   return sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h).trim(); });
 }
 
-/** active_status == 1, session == n ve geçerli vakalar; session_order'a göre sıralı. */
+/**
+ * active_status == 1, session == n ve geçerli vakalar; session_order'a göre sıralı.
+ * Hazır bir oturumun vakaları önbellekten gelir; hazır olmayan sonuç önbelleğe yazılmaz.
+ */
 function getSessionCases_(n) {
-  const sheet = getSpreadsheet_().getSheetByName(CONFIG.CASE_SHEET);
-  if (!sheet) return [];
-  return filterSessionCases_(readRows_(sheet), n);
+  return cachedJson_('cases:' + n, function () {
+    const sheet = getSpreadsheet_().getSheetByName(CONFIG.CASE_SHEET);
+    return sheet ? filterSessionCases_(readRows_(sheet), n) : [];
+  }, function (cases) { return sessionProblems_(cases).length === 0; }).value;
 }
 
 /**
  * Katılımcı kodunu Participants listesine göre doğrular ve listedeki kanonik kodu döndürür.
  * Eşleştirmede büyük/küçük harf, boşluk ve noktalama yok sayılır (p014 → P-014).
  * Bilinmeyen veya pasif kodda kodun hangi kısmının yanlış olduğu söylenmez.
+ * Kod önbellekteki listede yoksa (yeni eklenmiş olabilir) liste sayfadan yeniden okunur.
  */
 function requireParticipant_(raw) {
   const uid = requireUserId_(raw);
-  const sheet = getSpreadsheet_().getSheetByName(CONFIG.PARTICIPANT_SHEET);
-  if (!sheet) {
-    Logger.log('HATA: "' + CONFIG.PARTICIPANT_SHEET + '" sayfası yok — initializeDatabase() çalıştırın ve kodları girin.');
-    fail_('E_PARTICIPANT_UNKNOWN');
-  }
-  const canonical = findParticipant_(readRows_(sheet), uid);
+  const list = participantCodes_(false);
+  let canonical = matchParticipantCode_(list.value, uid);
+  if (!canonical && list.fromCache) canonical = matchParticipantCode_(participantCodes_(true).value, uid);
   if (!canonical) fail_('E_PARTICIPANT_UNKNOWN');
   return canonical;
+}
+
+/** Aktif katılımcı kodları: { value: [kod…], fromCache }. fresh = true önbelleği atlar ve yeniler. */
+function participantCodes_(fresh) {
+  const load = function () {
+    const sheet = getSpreadsheet_().getSheetByName(CONFIG.PARTICIPANT_SHEET);
+    if (!sheet) {
+      Logger.log('HATA: "' + CONFIG.PARTICIPANT_SHEET + '" sayfası yok — initializeDatabase() çalıştırın ve kodları girin.');
+      return [];
+    }
+    return activeParticipantCodes_(readRows_(sheet));
+  };
+  const keep = function (codes) { return codes.length > 0; };
+  return fresh ? storeJson_('participants', load(), keep) : cachedJson_('participants', load, keep);
+}
+
+
+/* ============================================================================
+ *  ÖNBELLEK — yalnızca oturum boyunca değişmeyen tablolar (CaseDetails, Participants).
+ *  Session<n> yanıt sayfaları ASLA önbelleğe alınmaz. CacheService'e erişilemezse veya
+ *  değer çok büyükse hata verilmez; doğrudan sayfadan okunur.
+ * ========================================================================== */
+
+/** CacheService değer sınırı 100 KB; Türkçe karakterler UTF-8'de 2 bayt olduğundan karakter sınırı yarısı. */
+const CACHE_MAX_CHARS = 50000;
+
+function cacheKey_(name) {
+  return CONFIG.STUDY_ID + ':' + APP_VERSION + ':' + name;
+}
+
+function scriptCache_() {
+  if (!(Number(CONFIG.CACHE_TTL_SECONDS) > 0)) return null;
+  try {
+    return CacheService.getScriptCache();
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Önbellekte varsa onu, yoksa loader() sonucunu döndürür; keep(değer) doğruysa önbelleğe yazar. */
+function cachedJson_(name, loader, keep) {
+  const cache = scriptCache_();
+  if (cache) {
+    try {
+      const hit = cache.get(cacheKey_(name));
+      if (hit !== null) return { value: JSON.parse(hit), fromCache: true };
+    } catch (e) {
+      // önbellek okunamadı: sayfadan okunur
+    }
+  }
+  return storeJson_(name, loader(), keep);
+}
+
+function storeJson_(name, value, keep) {
+  const cache = scriptCache_();
+  if (cache && (!keep || keep(value))) {
+    try {
+      const json = JSON.stringify(value);
+      if (json.length <= CACHE_MAX_CHARS) cache.put(cacheKey_(name), json, Math.min(21600, Number(CONFIG.CACHE_TTL_SECONDS)));
+    } catch (e) {
+      // önbelleğe yazılamadı: sonraki çağrı yine sayfadan okur
+    }
+  }
+  return { value: value, fromCache: false };
+}
+
+/** CaseDetails ve Participants önbelleğini boşaltır (araştırmacı fonksiyonları ve onEdit). */
+function clearTableCache_() {
+  const cache = scriptCache_();
+  if (!cache) return;
+  const keys = [cacheKey_('participants')];
+  for (let n = 1; n <= CONFIG.TOTAL_SESSIONS; n++) keys.push(cacheKey_('cases:' + n));
+  try {
+    cache.removeAll(keys);
+  } catch (e) {
+    // süre dolunca yenilenir
+  }
 }
 
 function assertSessionReady_(n, cases) {
@@ -1011,15 +1116,27 @@ function participantKey_(v) {
   return normalizeUserId_(v).replace(/[^\p{L}\p{N}]/gu, '');
 }
 
-/** Listedeki ilk aktif ve geçerli eşleşmenin kanonik kodu; yoksa null. */
-function findParticipant_(rows, uid) {
+/** Participants satırlarından aktif ve geçerli kodlar (kanonik biçimde, liste sırasıyla). */
+function activeParticipantCodes_(rows) {
+  return rows
+    .filter(function (r) { return Number(r.active_status) === 1; })
+    .map(function (r) { return normalizeUserId_(r.user_id); })
+    .filter(function (id) { return !userIdProblem_(id); });
+}
+
+/** Girilen kodla eşleşen ilk kanonik kod; yoksa null. */
+function matchParticipantCode_(codes, uid) {
   const key = participantKey_(uid);
   if (!key) return null;
-  const hit = rows.find(function (r) {
-    const id = normalizeUserId_(r.user_id);
-    return Number(r.active_status) === 1 && !userIdProblem_(id) && participantKey_(id) === key;
-  });
-  return hit ? normalizeUserId_(hit.user_id) : null;
+  for (let i = 0; i < codes.length; i++) {
+    if (participantKey_(codes[i]) === key) return codes[i];
+  }
+  return null;
+}
+
+/** Listedeki ilk aktif ve geçerli eşleşmenin kanonik kodu; yoksa null. */
+function findParticipant_(rows, uid) {
+  return matchParticipantCode_(activeParticipantCodes_(rows), uid);
 }
 
 /** Katılımcı listesi denetimi: { active, inactive, lines: ['HATA …' | 'UYARI …'] }. */

@@ -1,4 +1,4 @@
-# Pediatrik Triyaj Ciddi Oyunu v2.3 (Google Apps Script)
+# Pediatrik Triyaj Ciddi Oyunu v2.3.1 (Google Apps Script)
 
 Plan.md v2.2.0 (23.10.2026) uyarınca yazılmıştır: v2.0 temeli + §18 (güven düzeyi, Gelişimim,
 rozetler) + §19 (tamamlama kilidi). v2.3, dış incelemelerden gelen veri bütünlüğü ve güvenlik
@@ -68,6 +68,33 @@ Tehlikeli düşük triyaj özet ekranında ve Gelişimim tablosunda gösterilmey
   **özet penceresi açık** 0 olmalı ya da son gönderimin üzerinden en az 30 dk geçmiş olmalı. Aksi halde
   oturumu bitirmek üzere olan katılımcılar geri bildirimlerini göremez.
 
+### Yük ve eşzamanlılık (100 hekim) — v2.3.1
+Apps Script bir kullanıcı adına en fazla **30 eşzamanlı yürütmeye** izin verir. Web uygulaması
+"benim olarak" çalıştığı için tüm katılımcıların çağrıları bu 30'u paylaşır; sınırı aşan çağrı hiç
+başlamaz ve tarayıcıya hata döner (sunucudan `E_BUSY` gelmez). Ayrıca yanıt yazımı, betik kilidiyle
+sıraya girer.
+
+- **Sessiz yeniden deneme (`index.html`, `callServer`):** giriş, gönderim ve özet çağrıları;
+  sunucu `E_BUSY` / `E_INTERNAL` döndürürse **ya da çağrı hiç çalışamazsa** kullanıcıya hata
+  göstermeden en fazla 3 kez yeniden denenir. Bekleme rastgeledir: 1–4 sn, sonra 2–8 sn, sonra 3–12 sn.
+  Bu sırada "Yanıtınız kaydediliyor…" ekranda kalır. Tekrar güvenlidir: aynı vakanın ikinci kaydı
+  `E_DUPLICATE` ile reddedilir ve istemci bunu başarı sayar; dondurulmuş süreler değişmez. Deneme hakkı
+  bitince mesaj her zamanki gibi gösterilir.
+- **Önbellek (`Code.gs`, `CacheService`):** hazır bir oturumun vakaları ve aktif katılımcı kodları
+  `CACHE_TTL_SECONDS` (300 sn) boyunca önbellekten okunur. `Session1…5` yanıt sayfaları **asla**
+  önbelleğe alınmaz (yineleme ve sıra denetimleri her zaman taze veriyle yapılır).
+  - `CaseDetails` veya `Participants` el ile düzenlenince `onEdit` önbelleği hemen boşaltır;
+    `auditCaseDataset()` / `previewSession()` çalıştırmak da boşaltır.
+  - Listeye yeni eklenen kod **hemen** geçerlidir (önbellekte bulunmayan kod için liste yeniden okunur).
+  - Hücre düzenlemesi olmadan yapılan değişiklikler (ör. sayfa silme/yeniden adlandırma) en geç 5 dk
+    içinde yansır. `CACHE_TTL_SECONDS: 0` önbelleği kapatır.
+  - CacheService'e erişilemezse hata verilmez; sayfalar doğrudan okunur.
+- **Kısa kilit:** `submitCase` doğrulamaları (katılımcı, vaka, yanıt biçimi) kilitten önce yapar;
+  kilit yalnızca `Session<n>` okuma-yazma bölümünü kapsar.
+- **Kalan sınırlar:** sayfanın ilk açılışı (`doGet`) da 30 sınırına sayılır ve istemci kodu henüz
+  yüklenmediği için otomatik denenemez; nadiren "sayfa açılmadı" görülürse sayfayı yenilemek yeter.
+  Gerçek yükü veri toplamadan önce 5–10 meslektaşla aynı anda deneyen kısa bir pilotla doğrulayın.
+
 ### Araştırmacı fonksiyonları
 `initializeDatabase`, `auditCaseDataset`, `previewSession` yalnızca **betik sahibi** tarafından
 düzenleyiciden çalıştırılabilir (web uygulamasından `google.script.run` ile çağrılırsa hata verir).
@@ -92,6 +119,9 @@ için `userinfo.email` kapsamı gerekir. `appsscript.json` kapsamları açıkça
   - özet ilk açılıştan 30 dk sonra yeniden açılınca kilit ekranı;
   - "Sayfayı yenile" düğmesi.
 - Tarayıcı konsolunda `google.script.run.initializeDatabase()` hata vermeli.
+- Önbellek: oturum açıkken bir vakanın `case_version` hücresini el ile değiştirin; o vakayı yanıtlamakta
+  olan katılımcının gönderimi "vaka güncellendi" mesajı almalı (onEdit önbelleği boşaltıyor demektir).
+  Almazsa önbellek en geç 5 dk sonra yenilenir; değişiklikten sonra `auditCaseDataset()` çalıştırın.
 - Medya bağlantılarını araştırmacı hesabıyla oturum açılmamış bir tarayıcıda test edin (Drive dosyaları
   "bağlantıya sahip olan herkes" ile paylaşılmalı).
 

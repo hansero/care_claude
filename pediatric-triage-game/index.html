@@ -532,6 +532,21 @@
     if (!hidden && since !== null) { hiddenMs += Math.max(0, nowMs - since); since = null; }
     return { startMs: t.startMs, hiddenMs: hiddenMs, hiddenSince: since, lastSeenMs: nowMs, frozen: t.frozen || null };
   }
+  /**
+   * Sessiz yeniden deneme. Sunucu yoğunsa (E_BUSY), geçici bir sunucu hatası olursa (E_INTERNAL) ya da
+   * çağrı hiç çalışamazsa (ör. 30 eşzamanlı yürütme sınırı, ağ kesintisi) kullanıcıya hata gösterilmez:
+   * istemci rastgele bir süre bekleyip en fazla RETRY_MAX kez yeniden dener. Bekleme ilk denemede 1–4 sn,
+   * sonra 2–8 ve 3–12 sn'dir (jitter: aynı anda gelen istekler zamana yayılır).
+   * Tüm sunucu çağrıları tekrarlanabilir: aynı vakanın ikinci kaydı E_DUPLICATE ile reddedilir (istemci için başarı).
+   */
+  var RETRY_MAX = 3;
+  var RETRY_BASE_MS = 1000;
+  var RETRY_SPREAD_MS = 3000;
+  var RETRY_CODES = { E_BUSY: true, E_INTERNAL: true };
+  function retryDelayMs(attempt, random) {
+    return Math.round((RETRY_BASE_MS + random * RETRY_SPREAD_MS) * attempt);
+  }
+
   /** Gönderilecek süreler (0,1 sn); gizli süre toplam süreyi aşamaz. */
   function timerRead(t, nowMs) {
     var total = nowMs - t.startMs;
@@ -560,13 +575,35 @@
   function showLoading(text) { $('loadingText').textContent = text || 'Yükleniyor…'; $('loading').hidden = false; }
   function hideLoading() { $('loading').hidden = true; }
 
-  /** Tüm sunucu çağrıları: başarı + hata işleyicisi, yükleniyor katmanı. */
+  /**
+   * Tüm sunucu çağrıları: başarı + hata işleyicisi, yükleniyor katmanı ve sessiz yeniden deneme.
+   * Yeniden denemeler aynı argümanlarla yapılır (dondurulmuş süreler değişmez); bu sürede yükleniyor
+   * metni ekranda kalır. Deneme hakkı bitince son yanıt / hata her zamanki gibi gösterilir.
+   */
   function callServer(fn, args, loadingText, onSuccess, onFailure) {
+    var attempt = 0;
+    function retryLater() {
+      if (attempt >= RETRY_MAX) return false;
+      attempt++;
+      window.setTimeout(send, retryDelayMs(attempt, Math.random()));
+      return true;
+    }
+    function send() {
+      var runner = google.script.run
+        .withSuccessHandler(function (res) {
+          if (res && RETRY_CODES[res.code] && retryLater()) return;
+          hideLoading();
+          onSuccess(res);
+        })
+        .withFailureHandler(function (err) {
+          if (retryLater()) return;
+          hideLoading();
+          onFailure(err);
+        });
+      runner[fn].apply(runner, args);
+    }
     showLoading(loadingText);
-    var runner = google.script.run
-      .withSuccessHandler(function (res) { hideLoading(); onSuccess(res); })
-      .withFailureHandler(function (err) { hideLoading(); onFailure(err); });
-    runner[fn].apply(runner, args);
+    send();
   }
   function networkMessage(err) {
     var m = err && err.message ? err.message : String(err || 'bilinmeyen hata');

@@ -59,6 +59,17 @@ test('T47 — oturum bağımsızlığı: yalnızca mevcut toplamlar; geçmiş pa
     earned(PERFECT));
 });
 
+test('sessiz yeniden deneme: 3 deneme, 1–4 sn jitter ve büyüyen bekleme; yalnızca geçici kodlar', () => {
+  assert.equal(ctx.RETRY_MAX, 3);
+  assert.deepEqual(Object.keys(ctx.RETRY_CODES).sort(), ['E_BUSY', 'E_INTERNAL']);
+  assert.deepEqual([ctx.retryDelayMs(1, 0), ctx.retryDelayMs(1, 0.5), ctx.retryDelayMs(1, 0.9999)], [1000, 2500, 4000]);
+  assert.deepEqual([ctx.retryDelayMs(2, 0), ctx.retryDelayMs(2, 1)], [2000, 8000]);
+  assert.deepEqual([ctx.retryDelayMs(3, 0), ctx.retryDelayMs(3, 1)], [3000, 12000]);
+  // Kullanıcının düzeltmesi gereken hatalar yeniden denenmez
+  ['E_DUPLICATE', 'E_PARTICIPANT_UNKNOWN', 'E_CASE_VERSION_CHANGED', 'E_SESSION_LOCKED', 'E_HONOR_REQUIRED']
+    .forEach((code) => assert.ok(!ctx.RETRY_CODES[code], code));
+});
+
 test('vaka zamanlayıcısı: gizli süre, yenileme boşluğu ve okuma', () => {
   const T0 = 1000000;
   let t = j(ctx.timerStart(T0, false));

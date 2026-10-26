@@ -208,7 +208,7 @@ test('T07 — CURRENT_SESSION = 2: CASE-004, CASE-005, CASE-006 bu sırayla', ()
   const g = fresh(2);
   const { boot, out } = bootOf(g);
   assert.deepEqual(boot, {
-    activeSession: 2, totalSessions: 5, casesPerSession: 3, appVersion: '2.3.0', requireHonor: true,
+    activeSession: 2, totalSessions: 5, casesPerSession: 3, appVersion: '2.3.1', requireHonor: true,
     appUrl: 'https://script.google.com/macros/s/TEST/exec'
   });
   assert.equal(out.title, 'Pediatrik Triyaj — PDÜ Değerlendirmesi');
@@ -303,7 +303,7 @@ test('T13 — "014" baştaki sıfır korunarak; zaman damgaları metin olarak ya
   assert.equal(r.user_id, '014');
   assert.equal(typeof r.case_start_time, 'string');
   assert.equal(typeof r.case_submission_time, 'string');
-  assert.equal(r.app_version, '2.3.0');
+  assert.equal(r.app_version, '2.3.1');
   assert.deepEqual(login(g, '014').completedCaseIds, ['CASE-001']);
 });
 
@@ -837,10 +837,12 @@ test('T54 — sonraki oturum açılınca kilitli kullanıcı yeni oturumun 1. va
 
 /* ---------------------------------------------------------------- v2.3 — geri bildirim düzeltmeleri */
 
-/** Bir sayfada başlığa göre hücre değiştirir (araştırmacının el ile düzenlemesi). */
+/** Bir sayfada başlığa göre hücre değiştirir: araştırmacının el ile düzenlemesi (onEdit tetiklenir). */
 function setCell(g, name, header, rowNumber, value) {
   const sh = sheet(g, name);
-  sh.getRange(rowNumber, sh._data[0].indexOf(header) + 1).setValue(value);
+  const range = sh.getRange(rowNumber, sh._data[0].indexOf(header) + 1);
+  range.setValue(value);
+  g.ctx.onEdit({ range });
 }
 
 test('v2.3 — yeni kurulum: CURRENT_SESSION = 0, yer tutucular pasif, boş Participants; oturum hazır değil', () => {
@@ -901,7 +903,9 @@ test('G1.1 — izin listesi: bilinmeyen / pasif kod üç API\'de reddedilir; p01
   assert.deepEqual(g.call('submitCase', payload(s, 'CASE-002')), unknown);
   assert.equal(rows(g, 'Session1').length, 1);
   // Participants sayfası yoksa da aynı genel hata; araştırmacı için günlükte açık mesaj
+  // (sayfa adı değişikliği onEdit tetiklemez: önbellek süresinin dolması taklit edilir)
   sheet(g, 'Participants')._name = 'Participants_eski';
+  g.env.cache.expireAll();
   assert.deepEqual(g.call('startSession', 'P-015', true), unknown);
   assert.match(g.env.logs.join('\n'), /"Participants" sayfası yok/);
 });
@@ -1008,4 +1012,113 @@ test('G1.3 — bağlı e-tablo bulunamazsa açık günlük mesajı, istemciye E_
   g.ctx.SpreadsheetApp.getActiveSpreadsheet = () => null;
   assert.equal(g.call('startSession', 'P-1', true).code, 'E_INTERNAL');
   assert.match(g.env.logs.join('\n'), /Bağlı e-tabloya erişilemedi/);
+});
+
+/* ---------------------------------------------------------------- v2.3 — yük: önbellek ve kısa kilit */
+
+const reads = (g, name) => sheet(g, name)._reads;
+const cacheKeys = (g) => [...g.env.cache.store.keys()].sort();
+
+test('önbellek — sıcak önbellekte CaseDetails ve Participants okunmaz; Session<n> her zaman taze okunur', () => {
+  const g = fresh(1);
+  const s = login(g, 'P-1');   // soğuk: iki tablo okunur ve önbelleğe yazılır
+  assert.deepEqual(cacheKeys(g), ['PEDTRI-LC-01:' + g.get('APP_VERSION') + ':cases:1', 'PEDTRI-LC-01:' + g.get('APP_VERSION') + ':participants']);
+  const before = { cd: reads(g, 'CaseDetails'), pt: reads(g, 'Participants'), s1: reads(g, 'Session1') };
+  assert.ok(g.call('submitCase', payload(s, 'CASE-001')).ok);
+  const s2 = login(g, 'P-2');
+  assert.ok(g.call('submitCase', payload(s2, 'CASE-001')).ok);
+  completeSession(g, 'P-3');
+  assert.equal(g.call('getSessionSummary', 'P-3').cases.length, 3);
+  assert.equal(reads(g, 'CaseDetails'), before.cd, 'CaseDetails yeniden okunmadı');
+  assert.equal(reads(g, 'Participants'), before.pt, 'Participants yeniden okunmadı');
+  assert.ok(reads(g, 'Session1') > before.s1, 'yanıt sayfası her çağrıda okunur');
+  assert.ok(!cacheKeys(g).some((k) => /Session/.test(k)), 'yanıt sayfaları önbelleğe alınmaz');
+  assert.deepEqual(rows(g, 'Session1').map((r) => r.user_id), ['P-1', 'P-2', 'P-3', 'P-3', 'P-3']);
+});
+
+test('önbellek — yeni katılımcı hemen girer; pasifleştirme onEdit ile hemen, onEdit yoksa süre dolunca geçerli', () => {
+  const g = fresh(1);
+  login(g, 'P-1');
+  addParticipants(g.env, ['P-NEW']);                 // onEdit olmadan eklendi
+  assert.equal(login(g, 'P-NEW').userId, 'P-NEW', 'önbellekte olmayan kod için liste yeniden okunur');
+  const ps = sheet(g, 'Participants');
+  const rowOf = (id) => ps._data.findIndex((r) => r[0] === id) + 1;
+  ps._data[rowOf('P-1') - 1][1] = 0;                 // onEdit olmadan pasifleştirildi
+  assert.equal(login(g, 'P-1').userId, 'P-1', 'önbellek süresince eski liste geçerli');
+  g.env.cache.expireAll();
+  assert.equal(g.call('startSession', 'P-1', true).code, 'E_PARTICIPANT_UNKNOWN');
+  login(g, 'P-2');
+  setCell(g, 'Participants', 'active_status', rowOf('P-2'), 0);   // el ile düzenleme → onEdit
+  assert.equal(g.call('startSession', 'P-2', true).code, 'E_PARTICIPANT_UNKNOWN', 'onEdit önbelleği hemen boşaltır');
+});
+
+test('önbellek — vaka düzenlemesi auditCaseDataset ile hemen yayılır; önbellek bozuksa doğrudan okunur', () => {
+  const g = fresh(1);
+  assert.equal(login(g, 'P-1').cases[0].case_version, 1);
+  const cs = sheet(g, 'CaseDetails');
+  cs._data[1][cs._data[0].indexOf('case_version')] = 2;   // onEdit olmadan
+  assert.equal(login(g, 'P-1').cases[0].case_version, 1, 'önbellek süresince başlangıç ve gönderim aynı sürümü görür');
+  g.ctx.auditCaseDataset();
+  assert.equal(login(g, 'P-1').cases[0].case_version, 2);
+  // CacheService kullanılamazsa: hata yok, sayfadan okunur
+  g.env.cache.broken = true;
+  const r0 = reads(g, 'CaseDetails');
+  const s = login(g, 'P-5');
+  assert.ok(g.call('submitCase', payload(s, 'CASE-001', { caseVersion: 2 })).ok);
+  assert.ok(reads(g, 'CaseDetails') >= r0 + 2);
+  g.call('auditCaseDataset');   // bozuk önbellekte boşaltma da hata vermez
+  assert.match(g.env.logs.join('\n'), /=== VAKA BANKASI DENETİMİ ===/);
+});
+
+test('önbellek — hazır olmayan oturum ve boş liste yazılmaz; büyük değer atlanır; CACHE_TTL_SECONDS = 0 kapatır', () => {
+  const g = fresh(1);
+  const cs = sheet(g, 'CaseDetails');
+  const col = cs._data[0].indexOf('active_status');
+  cs._data[1][col] = 0;
+  assert.equal(g.call('startSession', 'P-1', true).code, 'E_SESSION_NOT_READY');
+  assert.ok(!cacheKeys(g).some((k) => k.endsWith(':cases:1')), 'hazır olmayan sonuç önbelleğe yazılmaz');
+  cs._data[1][col] = 1;                               // onEdit olmadan düzeltildi
+  assert.equal(login(g, 'P-1').status, 'active', 'düzeltme hemen geçerli');
+
+  const big = fresh(1);
+  addParticipants(big.env, Array.from({ length: 6000 }, (_, i) => 'Z-' + i));
+  assert.equal(login(big, 'Z-5999').userId, 'Z-5999');
+  assert.ok(!cacheKeys(big).some((k) => k.endsWith(':participants')), '50.000 karakteri aşan liste önbelleğe yazılmaz');
+
+  const off = fresh(1, { CACHE_TTL_SECONDS: 0 });
+  login(off, 'P-1');
+  const r0 = reads(off, 'CaseDetails');
+  login(off, 'P-2');
+  assert.ok(reads(off, 'CaseDetails') > r0);
+  assert.equal(off.env.cache.stats.puts + off.env.cache.stats.gets, 0);
+});
+
+test('onEdit — yalnızca CaseDetails / Participants düzenlemeleri önbelleği boşaltır; bozuk olay hata vermez', () => {
+  const g = fresh(1);
+  completeSession(g, 'P-1');
+  assert.equal(cacheKeys(g).length, 2);
+  g.ctx.onEdit({ range: sheet(g, 'Session1').getRange(2, 1) });
+  assert.equal(cacheKeys(g).length, 2, 'yanıt sayfası düzenlemesi önbelleği etkilemez');
+  assert.doesNotThrow(() => g.ctx.onEdit());
+  assert.doesNotThrow(() => g.call('onEdit', { range: { a: 1 } }), 'google.script.run ile sahte olay');
+  g.ctx.onEdit({ range: sheet(g, 'CaseDetails').getRange(5, 3) });
+  assert.deepEqual(cacheKeys(g), []);
+});
+
+test('submitCase — doğrulamalar kilitten önce; kilit yalnızca okuma-yazma bölümünü kapsar', () => {
+  const g = fresh(1);
+  const s = login(g, 'P-1');
+  const a0 = g.env.lockAttempts;
+  assert.equal(g.call('submitCase', payload(s, 'CASE-001', { user_spo2_classification: 2 })).code, 'E_INVALID_BINARY');
+  assert.equal(g.call('submitCase', payload(s, 'CASE-001', { userId: 'P-9999' })).code, 'E_PARTICIPANT_UNKNOWN');
+  assert.equal(g.call('submitCase', payload(s, 'CASE-004')).code, 'E_CASE_NOT_IN_SESSION', 'başka oturumun vakası');
+  assert.equal(g.env.lockAttempts, a0, 'geçersiz gönderimler kilit beklemez');
+  // Geçici yoğunluk: ilk deneme E_BUSY, istemcinin yeniden denemesi kaydeder
+  g.env.lockFailures = 1;
+  assert.equal(g.call('submitCase', payload(s, 'CASE-001')).code, 'E_BUSY');
+  assert.ok(g.call('submitCase', payload(s, 'CASE-001')).ok);
+  assert.equal(g.call('submitCase', payload(s, 'CASE-001')).code, 'E_DUPLICATE', 'yanıtı kaybolan deneme ikinci satır yazmaz');
+  assert.equal(rows(g, 'Session1').length, 1);
+  assert.equal(g.env.lockHeld, false);
+  assert.deepEqual(g.env.lockErrors, []);
 });
